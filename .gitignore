@@ -1,0 +1,43 @@
+# Clojure
+/target
+/classes
+/checkouts
+*.jar
+*.class
+/.cpcache
+/.lein-*
+/.nrepl-port
+/.prepl-port
+.hgignore
+.hg/
+
+# Java
+/java/target
+
+# Calva specific
+.calva
+
+.clj-kondo
+.lsp
+
+# IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Logs
+*.log
+
+# Local configuration
+.env
+.env.local
+
+# Native libraries
+# *.so
+# *.dylib
+# *.dll 
