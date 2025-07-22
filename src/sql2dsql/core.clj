@@ -55,15 +55,18 @@
     [(keyword (:defname def-elem)) true]))
 
 
+
+; todo: distinct / distinct on
 (defmethod stmt->dsql :SelectStmt [x & [opts]]
   (let [select-stmt (:SelectStmt x)]
     (cond->
-     {:select (let [target-list (:targetList select-stmt)]
+     {:select
+      (let [target-list (:targetList select-stmt)]
                 (if (only-star? target-list)
                   :*
                   (into {} (map-indexed (fn [i x] (stmt->dsql x (assoc opts :column (inc i))))
                                         target-list))))}
-      (:fromClause select-stmt) (merge (let [from-clause (:fromClause select-stmt)
+     (:fromClause select-stmt) (merge (let [from-clause (:fromClause select-stmt)
                                              result (if (= 1 (count from-clause))
                                                       (stmt->dsql (first from-clause) opts)
                                                       (let [q (mapv (fn [x] (stmt->dsql x opts))
@@ -106,24 +109,30 @@
          keyword))))
 
 (defmethod stmt->dsql :ColumnRef [x & [opts]]
-  (if (or (:whereClause? opts) (:join? opts) (:order-by? opts))
-    (keyword (string/join "." (map #(-> % :String :sval) (:fields (:ColumnRef x)))))
-    (let [column-ref (:ColumnRef x)
-          column-name (get-column-name column-ref opts)]
-      [column-name (keyword (string/join "." (map #(-> % :String :sval) (:fields column-ref))))])))
+  (cond
+    (or (:whereClause? opts) (:join? opts) (:order-by? opts) (:isA_Expr? opts))
+      (keyword (string/join "." (map #(-> % :String :sval) (:fields (:ColumnRef x)))))
+    :else
+      (let [column-ref (:ColumnRef x)
+            column-name (get-column-name column-ref opts)]
+        [column-name (keyword (string/join "." (map #(-> % :String :sval) (:fields column-ref))))])
+    )
+  )
 
 (def operators {"->>" :jsonb/->>
                 "#>>" :jsonb/#>>
                 "~~*" :ilike})
 
 (defmethod stmt->dsql :A_Expr [x & [opts]]
-  (let [lexpr (stmt->dsql (-> x :A_Expr :lexpr) opts)
-        rexpr (stmt->dsql (-> x :A_Expr :rexpr) opts)
-        opname (-> x :A_Expr :name first :String :sval)]
-    ;; todo: need add meta
-    [(or (get operators opname) (keyword opname)) 
-     lexpr 
-     rexpr]))
+  (let [opts (assoc opts :isA_Expr? true)
+        lexpr (stmt->dsql (-> x :A_Expr :lexpr) opts)
+        rexpr  (stmt->dsql (-> x :A_Expr :rexpr) opts)
+        opname (-> x :A_Expr :name first :String :sval)
+        op (or (get operators opname) (keyword opname))
+        expr [op lexpr rexpr]]
+    (if-let [column-name (some-> (:name opts) keyword)]
+      [column-name expr]
+      expr)))
 
 (defmethod stmt->dsql :RangeVar [x & [opts]]
   (if-let [aliasname (-> x :RangeVar :alias :aliasname)]
@@ -154,32 +163,39 @@
       (:sval aconst) (let [sval (:sval (:sval aconst))]
                        (if-let [[_ arr] (re-matches #"\{(.*)\}" sval)]
                          (parse-arr arr)
-                         sval))
+                         (if (:isFuncArg? opts)
+                           [:pg/sql (str \' sval \')]
+                           sval
+                           )
+                         )
+                       )
       :else
       (throw (Exception. (str "Unsupported A_Const: " aconst))))))
 
 (defmethod stmt->dsql :FuncCall [x & [opts]]
-  (let [funcname (-> x :FuncCall :funcname first :String :sval keyword)
+  (let [opts (assoc opts :isFuncArg? true)
+        funcname (-> x :FuncCall :funcname first :String :sval keyword)
         columnname (or (some-> opts :name keyword)
                        funcname)]
     (if (-> x :FuncCall :agg_star)
       (if (= funcname :count)
         [columnname ^:pg/fn [:pg/count*]]
         [columnname ^:pg/fn [funcname "*"]])
-      (into [funcname]
-       (mapv #(stmt->dsql % opts) (-> x :FuncCall :args))
-       ))))
+      (into [funcname] (mapv #(stmt->dsql % opts) (-> x :FuncCall :args)))
+      )
+    )
+  )
 
-"jsonb_build_object( 'id' , p.id )"
-[:jsonb_build_object "id" [:column- :p.id]]
-
-(stmt->dsql {:FuncCall
-             {:funcname [{:String {:sval "jsonb_build_object"}}],
-              :args
-              [{:A_Const {:sval {:sval "id"}, :location 41}}
-               {:ColumnRef {:fields [{:String {:sval "p"}} {:String {:sval "id"}}], :location 48}}],
-              :funcformat "COERCE_EXPLICIT_CALL",
-              :location 21}})
+;"jsonb_build_object( 'id' , p.id )"
+;(with-meta [:jsonb_build_object "id" [:column- :p.id]] {:pg/fn true})
+;
+;(stmt->dsql {:FuncCall
+;             {:funcname [{:String {:sval "jsonb_build_object"}}],
+;              :args
+;              [{:A_Const {:sval {:sval "id"}, :location 41}}
+;               {:ColumnRef {:fields [{:String {:sval "p"}} {:String {:sval "id"}}], :location 48}}],
+;              :funcformat "COERCE_EXPLICIT_CALL",
+;              :location 21}})
 
 (defmethod stmt->dsql :SQLValueFunction [x & [opts]]
   (let [f (keyword (string/replace (-> x :SQLValueFunction :op) "SVFOP_" ""))]
@@ -229,7 +245,5 @@
   (mapv (fn [{stmt :stmt}] (stmt->dsql stmt {:params params})) (:stmts (parse-sql sql))))
 
 (comment
-  
   (->dsql "select * from patient where id = '1'")
-
 )

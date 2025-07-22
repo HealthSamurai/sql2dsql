@@ -7,6 +7,20 @@
   (-> (apply ->dsql (cons sql params))
       first))
 
+(defn assertRight? [expected-dsql ^String sql & params]
+  (let [res-dsql (parse sql params)]
+    (if (= res-dsql expected-dsql)
+      true
+      (let []
+        (println "--> Test failed")
+        (println "    The actual result: " res-dsql)
+        (println "    The expected result: " expected-dsql)
+        (println "")
+        false
+        )
+      )
+    )
+  )
 
 (deftest select-tests
   (testing "select"
@@ -122,8 +136,9 @@
                      [:pg/cast [:jsonb/#>> :resource [:message :datetime]] :pg_catalog.timestamp]
                      [:- [:now] [:pg/cast "1 week" :pg_catalog.interval]]]
                     [:ilike :id [:pg/param "%Z%.CV"]]]}))
-
-    ;; not passed
+    )
+  (testing "select FuncCall case"
+    ; includes FuncCall assumption
     (is (= (parse "SELECT p.resource || jsonb_build_object('id', p.id) as pr, resource || jsonb_build_object('id', id) as resource
                    FROM oru
                    LEFT JOIN practitioner p ON practitioner.id = p.resource #>> '{\"patient_group\", \"order_group\", 0, order, requester, provider, 0, identifier, value}'
@@ -132,15 +147,77 @@
                    ORDER BY id
                    LIMIT 5"
                   "%Z38886%")
-           {:select {:resource [:|| :resource {:id :id}]
-                     :pr       [:|| :p.resource {:id :p.id}]}
-            :from :oru
-            :where [:ilike :id "%Z38886%"]
-            :left-join {:p {:table :practitioner
-                            :on {:by-id
-                                 [:= :practitioner.id [:jsonb/#>> :p.resource [:patient_group :order_group 0 :order :requester :provider 0 :identifier :value]]]}}
-                        :org {:table :organization
-                              :on {:by-id
-                                   [:= :organization.id [:jsonb/#>> :p.resource [:patient_group :order_group 0 :order :contact :phone 0 :phone]]]}}}
-            :order-by :id
-            :limit 5}))))
+           {:select {:pr [:|| :p.resource ^:pg/fn [:jsonb_build_object [:pg/sql "'id'"] :p.id]],
+                     :resource [:|| :resource ^:pg/fn [:jsonb_build_object [:pg/sql "'id'"] :id]]},
+            :left-join {:org {:table :organization,
+                              :on [:=
+                                   :organization.id
+                                   [:jsonb/#>> :p.resource [:patient_group :order_group 0 :order :contact :phone 0 :phone]]]},
+                        :p {:table :practitioner,
+                            :on [:=
+                                 :practitioner.id
+                                 [:jsonb/#>>
+                                  :p.resource
+                                  [:patient_group :order_group 0 :order :requester :provider 0 :identifier :value]]]}},
+            :from :oru,
+            :where [:ilike :id [:pg/param "%Z38886%"]],
+            :order-by :id,
+            :limit 5}))
+    )
+
+  (testing "select Distinct"
+    (is (assertRight?
+          {:select [:distinct :test]
+           :from :best}
+          "SELECT DISTINCT( test ) FROM best"))
+
+    (is (assertRight?
+          {:select
+                 ^{:pg/projection :distinct}
+                 {:id       :id
+                  :resource :resource
+                  :txid     :txid}
+           :from :best}
+          "SELECT DISTINCT id as id , resource as resource , txid as txid FROM best"))
+    )
+  (testing "select Distinct on"
+    (is (assertRight?
+          {:select
+                    ^{:pg/projection {:distinct-on [:id :txid]}}
+                    {:id       :id
+                     :resource :resource
+                     :txid     :txid}
+           :from :best}
+          "SELECT DISTINCT ON ( id , txid ) id as id , resource as resource , txid as txid FROM best"))
+
+    (is (assertRight?
+          {:select
+                    ^{:pg/projection {:distinct-on [:id]}}
+                    {:id       :id
+                     :resource :resource
+                     :txid     :txid}
+           :from :best}
+          "SELECT DISTINCT ON ( id ) id as id , resource as resource , txid as txid FROM best"))
+
+    (is (assertRight?
+          {:select
+                    ^{:pg/projection {:distinct-on [[:#>> :resource [:id]]]}}
+                    {:id       :id
+                     :resource :resource
+                     :txid     :txid}
+           :from :best}
+          "SELECT DISTINCT ON ( ( resource #>> '{id}' ) ) id as id , resource as resource , txid as txid FROM best"))
+    )
+
+  (testing "select ALL"
+    (is (assertRight?
+          {:select
+                 ^{:pg/projection :all}
+                 {:id       :id
+                  :resource :resource
+                  :txid     :txid}
+           :from :best}
+          "SELECT ALL id as id , resource as resource , txid as txid FROM best"))
+
+    )
+  )
