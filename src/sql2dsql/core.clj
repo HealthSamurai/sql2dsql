@@ -54,42 +54,76 @@
   (let [def-elem (:DefElem x)]
     [(keyword (:defname def-elem)) true]))
 
+(defn handle-target-list [select-stmt & [opts]]
+  (let [target-list (:targetList select-stmt)]
+    (if (only-star? target-list)
+      :*
+      (into {} (map-indexed (fn [i x] (stmt->dsql x (assoc opts :column (inc i))))
+                            target-list)))))
 
+(defn select-distinct-on [select-stmt & [opts]]
+  (if (vector? (:distinctClause select-stmt))
+    (let [distinct-on (:distinctClause select-stmt)]
+      (if (empty? (first distinct-on))
+        {:select-distinct (handle-target-list select-stmt opts)}
+        {:select
+         (let [target (handle-target-list select-stmt opts)
+               meta_ {:distinct-on (into [] (map (fn [x] (stmt->dsql x (assoc opts :distinctClause? true ))) distinct-on))}]
+           (with-meta target {:pg/projection meta_})
+           )
+         }
+        )
+      )
+    {:select (handle-target-list select-stmt opts)}
+    )
+  )
 
-; todo: distinct / distinct on
+(defn vl-get-size [lst]
+  (-> lst :List :items count))
+
+(defn vl-transform [lst & [opts]]
+  (into [] (map #(stmt->dsql % opts) (-> lst :List :items))))
+
+(defn handle-valuesLists [valuesLists & [opts]]
+  (let [max-length (reduce max (map vl-get-size valuesLists))
+        keys_ (mapv (comp keyword #(str "k" %)) (range 1 (inc max-length)))]
+    {:ql/type :pg/values
+     :keys keys_
+     :values (into [] (map (fn [x] (zipmap keys_ (vl-transform x opts))) valuesLists))
+     }
+    )
+  )
+
 (defmethod stmt->dsql :SelectStmt [x & [opts]]
   (let [select-stmt (:SelectStmt x)]
-    (cond->
-     {:select
-      (let [target-list (:targetList select-stmt)]
-                (if (only-star? target-list)
-                  :*
-                  (into {} (map-indexed (fn [i x] (stmt->dsql x (assoc opts :column (inc i))))
-                                        target-list))))}
-     (:fromClause select-stmt) (merge (let [from-clause (:fromClause select-stmt)
-                                             result (if (= 1 (count from-clause))
-                                                      (stmt->dsql (first from-clause) opts)
-                                                      (let [q (mapv (fn [x] (stmt->dsql x opts))
-                                                                    from-clause)]
-                                                        (into {} q)))]
-                                         (if (join? result)
-                                           (process-join result)
-                                           {:from result})))
-      (:whereClause select-stmt) (assoc :where
-                                        (stmt->dsql (:whereClause select-stmt) (assoc opts :whereClause? true)))
-      (:groupClause select-stmt) (assoc :group-by
-                                        (into {}
-                                              (map-indexed (fn [i x] (stmt->dsql x (assoc opts :column (inc i))))
-                                                           (:groupClause select-stmt))))
-      (:sortClause select-stmt) (assoc :order-by
-                                       (let [sort-clause (:sortClause select-stmt)]
-                                         (if (= 1 (count sort-clause))
-                                           (stmt->dsql (first sort-clause) opts)
-                                           (let [q (mapv (fn [x] (stmt->dsql x opts))
-                                                         sort-clause)]
-                                             (into {} q)))))
-      (:limitCount select-stmt) (assoc :limit
-                                       (stmt->dsql (:limitCount select-stmt))))))
+    (if (:valuesLists select-stmt)
+      (handle-valuesLists (:valuesLists select-stmt) (assoc opts :val-lists true))
+      (cond->
+        (select-distinct-on select-stmt opts)
+        (:fromClause select-stmt) (merge (let [from-clause (:fromClause select-stmt)
+                                               result (if (= 1 (count from-clause))
+                                                        (stmt->dsql (first from-clause) opts)
+                                                        (let [q (mapv (fn [x] (stmt->dsql x opts))
+                                                                      from-clause)]
+                                                          (into {} q)))]
+                                           (if (join? result)
+                                             (process-join result)
+                                             {:from result})))
+        (:whereClause select-stmt) (assoc :where
+                                          (stmt->dsql (:whereClause select-stmt) (assoc opts :whereClause? true)))
+        (:groupClause select-stmt) (assoc :group-by
+                                          (into {}
+                                                (map-indexed (fn [i x] (stmt->dsql x (assoc opts :column (inc i))))
+                                                             (:groupClause select-stmt))))
+        (:sortClause select-stmt) (assoc :order-by
+                                         (let [sort-clause (:sortClause select-stmt)]
+                                           (if (= 1 (count sort-clause))
+                                             (stmt->dsql (first sort-clause) opts)
+                                             (let [q (mapv (fn [x] (stmt->dsql x opts))
+                                                           sort-clause)]
+                                               (into {} q)))))
+        (:limitCount select-stmt) (assoc :limit (stmt->dsql (:limitCount select-stmt)))
+      ))))
 
 (defmethod stmt->dsql :ResTarget [x & [opts]]
   (let [res-target (:ResTarget x)]
@@ -110,7 +144,7 @@
 
 (defmethod stmt->dsql :ColumnRef [x & [opts]]
   (cond
-    (or (:whereClause? opts) (:join? opts) (:order-by? opts) (:isA_Expr? opts))
+    (or (:whereClause? opts) (:join? opts) (:order-by? opts) (:a-expr? opts) (:distinctClause? opts))
       (keyword (string/join "." (map #(-> % :String :sval) (:fields (:ColumnRef x)))))
     :else
       (let [column-ref (:ColumnRef x)
@@ -124,7 +158,7 @@
                 "~~*" :ilike})
 
 (defmethod stmt->dsql :A_Expr [x & [opts]]
-  (let [opts (assoc opts :isA_Expr? true)
+  (let [opts (assoc opts :a-expr? true)
         lexpr (stmt->dsql (-> x :A_Expr :lexpr) opts)
         rexpr  (stmt->dsql (-> x :A_Expr :rexpr) opts)
         opname (-> x :A_Expr :name first :String :sval)
@@ -163,7 +197,7 @@
       (:sval aconst) (let [sval (:sval (:sval aconst))]
                        (if-let [[_ arr] (re-matches #"\{(.*)\}" sval)]
                          (parse-arr arr)
-                         (if (:isFuncArg? opts)
+                         (if (or (:isFuncArg? opts) (:val-lists opts))
                            [:pg/sql (str \' sval \')]
                            sval
                            )
@@ -175,27 +209,21 @@
 (defmethod stmt->dsql :FuncCall [x & [opts]]
   (let [opts (assoc opts :isFuncArg? true)
         funcname (-> x :FuncCall :funcname first :String :sval keyword)
-        columnname (or (some-> opts :name keyword)
-                       funcname)]
-    (if (-> x :FuncCall :agg_star)
-      (if (= funcname :count)
-        [columnname ^:pg/fn [:pg/count*]]
-        [columnname ^:pg/fn [funcname "*"]])
-      (into [funcname] (mapv #(stmt->dsql % opts) (-> x :FuncCall :args)))
+        columnname (or (some-> opts :name keyword) funcname)]
+    (if (-> x :FuncCall :agg_distinct)
+      (let [arguments (mapv #(last (stmt->dsql % (assoc opts :distinctClause true))) (-> x :FuncCall :args))
+            arg-set (into [:pg/columns] arguments)
+            name (if-let [name (:name opts)] (keyword name) funcname)]
+         [name [funcname [:distinct arg-set]]])         ;; always returns "func(...) as name"
+      (if (-> x :FuncCall :agg_star)
+        (if (= funcname :count)
+          [columnname ^:pg/fn [:pg/count*]]
+          [columnname ^:pg/fn [funcname "*"]])
+        (into [funcname] (mapv #(stmt->dsql % opts) (-> x :FuncCall :args)))
+        )
       )
     )
   )
-
-;"jsonb_build_object( 'id' , p.id )"
-;(with-meta [:jsonb_build_object "id" [:column- :p.id]] {:pg/fn true})
-;
-;(stmt->dsql {:FuncCall
-;             {:funcname [{:String {:sval "jsonb_build_object"}}],
-;              :args
-;              [{:A_Const {:sval {:sval "id"}, :location 41}}
-;               {:ColumnRef {:fields [{:String {:sval "p"}} {:String {:sval "id"}}], :location 48}}],
-;              :funcformat "COERCE_EXPLICIT_CALL",
-;              :location 21}})
 
 (defmethod stmt->dsql :SQLValueFunction [x & [opts]]
   (let [f (keyword (string/replace (-> x :SQLValueFunction :op) "SVFOP_" ""))]
@@ -236,6 +264,14 @@
         typname (string/join  "." (map #(-> % :String :sval) (-> type-cast :typeName :names)))]
     
     [:pg/cast arg (keyword typname)]))
+
+
+; todo: develop alias logic
+(defmethod stmt->dsql :RangeSubselect [x & [opts]]
+  (let [x (:RangeSubselect x) subquery (:subquery x) alias (:alias x)]
+    (assoc (stmt->dsql subquery opts) :alias :to-be-implemented)
+    )
+  )
 
 (defmethod stmt->dsql :default [x & [opts]]
   (prn "default" x)

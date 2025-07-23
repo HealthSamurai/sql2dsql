@@ -10,8 +10,20 @@
 (defn assertRight? [expected-dsql ^String sql & params]
   (let [res-dsql (parse sql params)]
     (if (= res-dsql expected-dsql)
-      true
-      (let []
+      (let [meta_actual (meta (:select res-dsql))           ;; works only with directly meta at select stmts
+            meta_exected (meta (:select expected-dsql))]
+        (if (= meta_actual meta_exected)
+          true
+          (do
+            (println "--> Test failed: difference at meta")
+            (println "    The actual meta: " meta_actual)
+            (println "    The expected meta: " meta_exected)
+            (println "")
+            false
+            )
+          )
+        )
+      (do
         (println "--> Test failed")
         (println "    The actual result: " res-dsql)
         (println "    The expected result: " expected-dsql)
@@ -167,19 +179,19 @@
 
   (testing "select Distinct"
     (is (assertRight?
-          {:select [:distinct :test]
+          {:select-distinct {:test :test}
            :from :best}
-          "SELECT DISTINCT( test ) FROM best"))
+          "SELECT DISTINCT test FROM best"))
 
     (is (assertRight?
-          {:select
-                 ^{:pg/projection :distinct}
-                 {:id       :id
-                  :resource :resource
-                  :txid     :txid}
+          {:select-distinct
+           {:id       :id
+            :resource :resource
+            :txid     :txid}
            :from :best}
           "SELECT DISTINCT id as id , resource as resource , txid as txid FROM best"))
     )
+
   (testing "select Distinct on"
     (is (assertRight?
           {:select
@@ -201,7 +213,7 @@
 
     (is (assertRight?
           {:select
-                    ^{:pg/projection {:distinct-on [[:#>> :resource [:id]]]}}
+                    ^{:pg/projection {:distinct-on [[:jsonb/#>> :resource [:id]]]}}
                     {:id       :id
                      :resource :resource
                      :txid     :txid}
@@ -212,12 +224,107 @@
   (testing "select ALL"
     (is (assertRight?
           {:select
-                 ^{:pg/projection :all}
                  {:id       :id
                   :resource :resource
                   :txid     :txid}
            :from :best}
           "SELECT ALL id as id , resource as resource , txid as txid FROM best"))
-
     )
+
+  ;(testing "select into"                             not supported in dsql
+  ;  (is (assertRight?
+  ;        {}
+  ;        "SELECT employee_id, name, salary INTO high_earner FROM employee WHERE salary > 8000")))
+
+  (testing "select group distinct"                          ;; always func(...) as func
+    (is (assertRight?
+          {:select    {:department_id :department_id
+                       :count_job_titles         [:count [:distinct [:pg/columns :job_title]]]}
+           :from      :employee
+           :group-by  {:department_id :department_id}}
+          "SELECT department_id, COUNT(DISTINCT job_title) as count_job_titles FROM employee GROUP BY department_id"))
+    (is (assertRight?
+          {:select    {:department_id :department_id
+                       :count         [:count [:distinct [:pg/columns :job_title]]]}
+           :from      :employee
+           :group-by  {:department_id :department_id}}
+          "SELECT department_id, COUNT(DISTINCT job_title) FROM employee GROUP BY department_id"))
+    )
+
+  ;(testing "select ... group by ... having"          not supported in dsql
+  ;  (is (assertRight?
+  ;        {}
+  ;        "SELECT department_id, AVG(salary) AS avg_salary FROM employee
+  ;        WHERE status = 'active' GROUP BY department_id HAVING AVG(salary) > 50000"))
+  ;  )
+
+  ;(testing "select window"                           not supported in dsql
+  ;  (is (assertRight?
+  ;        {}
+  ;        "SELECT employee_id, salary, RANK() OVER emp_win AS salary_rank FROM employees
+  ;        WINDOW emp_win AS (PARTITION BY department_id ORDER BY salary DESC)"))
+  ;  )
+
+  (testing "select valueList"
+    (is (assertRight?
+          {:ql/type :pg/values
+           :keys [:k1 :k2]
+           :values [{:k1 1 :k2 [:pg/sql "'Alice'"]}
+                    {:k1 2 :k2 [:pg/sql "'Grandma'"]}
+                    {:k1 3 :k2 [:pg/sql "'Bob'"]}]}
+          "(VALUES (1, 'Alice'), (2, 'Grandma'), (3, 'Bob'))"))
+
+    (is (assertRight?
+          {:select :*
+           :from   {:ql/type :pg/values :keys [:k1 :k2] :values [{:k1 1 :k2 [:pg/sql "'Alice'"]}
+                                                                 {:k1 2 :k2 [:pg/sql "'Bob'"]}]
+                    :alias  {:t {:columns [:id :name]}}}}
+          "SELECT * FROM (VALUES (1, 'Alice'), (2, 'Bob')) AS t(id, name)"))
+    )
+
+  ;(testing "select limit_offset"                     not supported in dsql
+  ;  (is (assertRight?
+  ;        {}
+  ;        "SELECT * FROM employees ORDER BY hire_date OFFSET 5")))
+
+  ;(testing "select limit_option"                     not supported in dsql
+  ;  (is (assertRight?
+  ;        {}
+  ;        "SELECT * FROM employees FETCH FIRST 5 ROWS ONLY")))
+
+  (testing "select locking_clause"
+    (is (assertRight?
+          {:select :*
+           :from :employees
+           :for :update}
+          "SELECT * FROM employees FOR UPDATE"))
+    )
+
+  (testing "select with_clause"
+    (is (assertRight?
+          {}
+          "WITH recent_hires AS ( SELECT * FROM employees WHERE hire_date > CURRENT_DATE - INTERVAL '30 days')
+          SELECT * FROM recent_hires"))
+    )
+
+  (testing "select set operation"
+    (is (assertRight?
+          {}
+          "SELECT name FROM employees UNION SELECT name FROM contractors"))
+    (is (assertRight?
+          {}
+          "SELECT name FROM employees INTERSECT SELECT name FROM contractors"))
+    (is (assertRight?
+          {}
+          "SELECT name FROM employees EXCEPT SELECT name FROM contractors"))
+    )
+
+  (testing "select all"                                     ;; op retain duplicates
+    (is (assertRight?
+          {}
+          "SELECT name FROM employees UNION ALL SELECT name FROM contractors"))
+    )
+
+
+
   )
