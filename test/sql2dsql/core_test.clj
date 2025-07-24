@@ -99,6 +99,12 @@
   (testing "JOIN queries"
 
     (test-sql 8
+              "SELECT count(*) FROM dft"
+              []
+              {:select {:count [:pg/count*]}
+               :from :dft})
+
+    (test-sql 9
               "SELECT count(*) as count FROM dft
                LEFT JOIN document d ON dft.id = d.resource ->> 'caseNumber' AND d.resource ->> 'name' = $1
                WHERE d.id is NULL"
@@ -109,11 +115,12 @@
                                :on [:and
                                     ^:pg/op [:= :dft.id [:jsonb/->> :d.resource "caseNumber"]]
                                     ^:pg/op [:= [:jsonb/->> :d.resource "name"] [:pg/param "front"]]]}}
-               :where ^:pg/op [:is :d.id nil]}))
+               :where ^:pg/op [:is :d.id nil]})
+    )
 
   (testing "EXPLAIN queries"
 
-    (test-sql 9
+    (test-sql 10
               "EXPLAIN ANALYZE
                SELECT count(*) as count
                FROM dft
@@ -131,7 +138,7 @@
 
   (testing "Complex WHERE clauses"
 
-    (test-sql 10
+    (test-sql 11
               "SELECT id, resource
                FROM healthcareservices
                WHERE (
@@ -158,7 +165,7 @@
                         [:ilike [:jsonb/#>> :resource [:type 0 :coding 1 :code]] [:pg/param "b"]]]]
                :order-by :id})
 
-    (test-sql 11
+    (test-sql 12
               "SELECT count(*) FROM oru WHERE ( resource #>> '{message,datetime}' )::timestamp > now() - interval '1 week' and id ILIKE $1"
               ["%Z%.CV"]
               {:select {:count [:pg/count*]}
@@ -171,7 +178,7 @@
 
   (testing "Function calls"
 
-    (test-sql 12
+    (test-sql 13
               "SELECT p.resource || jsonb_build_object('id', p.id) as pr, resource || jsonb_build_object('id', id) as resource
                FROM oru
                LEFT JOIN practitioner p ON practitioner.id = p.resource #>> '{\"patient_group\", \"order_group\", 0, order, requester, provider, 0, identifier, value}'
@@ -197,19 +204,19 @@
                :order-by :id
                :limit 5})
 
-    (test-sql 13
+    (test-sql 14
               "SELECT AVG(salary) as avg_sal FROM abc"
               {:select {:avg_sal [:avg :salary]}
                :from :abc}))
 
   (testing "DISTINCT queries"
 
-    (test-sql 14
+    (test-sql 15
               "SELECT DISTINCT test FROM best"
               {:select-distinct {:test :test}
                :from :best})
 
-    (test-sql 15
+    (test-sql 16
               "SELECT DISTINCT id as id , resource as resource , txid as txid FROM best"
               {:select-distinct {:id :id
                                  :resource :resource
@@ -218,7 +225,7 @@
 
   (testing "DISTINCT ON queries"
 
-    (test-sql-meta 16
+    (test-sql-meta 17
                    "SELECT DISTINCT ON ( id , txid ) id as id , resource as resource , txid as txid FROM best"
                    []
                    {:select ^{:pg/projection {:distinct-on [:id :txid]}}
@@ -227,7 +234,7 @@
                              :txid :txid}
                     :from :best})
 
-    (test-sql-meta 17
+    (test-sql-meta 18
                    "SELECT DISTINCT ON ( id ) id as id , resource as resource , txid as txid FROM best"
                    []
                    {:select ^{:pg/projection {:distinct-on [:id]}}
@@ -236,7 +243,7 @@
                              :txid :txid}
                     :from :best})
 
-    (test-sql-meta 18
+    (test-sql-meta 19
                    "SELECT DISTINCT ON ( ( resource #>> '{id}' ) ) id as id , resource as resource , txid as txid FROM best"
                    []
                    {:select ^{:pg/projection {:distinct-on [[:jsonb/#>> :resource [:id]]]}}
@@ -247,7 +254,7 @@
 
   (testing "SELECT ALL"
 
-    (test-sql 19
+    (test-sql 20
               "SELECT ALL id as id , resource as resource , txid as txid FROM best"
               {:select {:id :id
                         :resource :resource
@@ -256,14 +263,14 @@
 
   (testing "GROUP BY with DISTINCT"
 
-    (test-sql 20
+    (test-sql 21
               "SELECT department_id, COUNT(DISTINCT job_title) as count_job_titles FROM employee GROUP BY department_id"
               {:select {:department_id :department_id
                         :count_job_titles [:count [:distinct [:pg/columns :job_title]]]}
                :from :employee
                :group-by {:department_id :department_id}})
 
-    (test-sql 21
+    (test-sql 22
               "SELECT department_id, COUNT(DISTINCT job_title) FROM employee GROUP BY department_id"
               {:select {:department_id :department_id
                         :count [:count [:distinct [:pg/columns :job_title]]]}
@@ -272,7 +279,7 @@
 
   (testing "VALUES clause"
 
-    (test-sql 22
+    (test-sql 23
               "(VALUES (1, 'Alice'), (2, 'Grandma'), (3, 'Bob'))"
               {:ql/type :pg/values
                :keys [:k1 :k2]
@@ -282,7 +289,7 @@
 
   (testing "FETCH FIRST"
 
-    (test-sql 23
+    (test-sql 24
               "SELECT * FROM employees FETCH FIRST 5 ROWS ONLY"
               {:select :*
                :from :employees
@@ -290,7 +297,7 @@
 
   (testing "WITH clause (CTEs)"
 
-    (test-sql 24
+    (test-sql 25
               "WITH recent_hires AS ( SELECT * FROM employees WHERE hire_date > CURRENT_DATE - INTERVAL '30 days')
                SELECT * FROM recent_hires"
               {:ql/type :pg/cte
@@ -301,7 +308,7 @@
                :select {:select :*
                         :from :recent_hires}})
 
-    (test-sql 25
+    (test-sql 26
               "WITH dept_avg AS (
                  SELECT department_id as dept_id, AVG(salary) as avg_sal
                  FROM employee
@@ -330,7 +337,7 @@
 
   (testing "Set operations"
 
-    (test-sql 26
+    (test-sql 27
               "SELECT name FROM employees UNION SELECT name FROM contractors"
               {:select {:name :name}
                :from :employees
@@ -338,7 +345,7 @@
                                      :select {:name :name}
                                      :from :contractors}}})
 
-    (test-sql 27
+    (test-sql 28
               "SELECT name FROM employees INTERSECT SELECT name FROM contractors"
               {:select {:name :name}
                :from :employees
@@ -346,7 +353,7 @@
                                          :select {:name :name}
                                          :from :contractors}}})
 
-    (test-sql 28
+    (test-sql 29
               "SELECT name FROM employees EXCEPT SELECT name FROM contractors"
               {:select {:name :name}
                :from :employees
@@ -354,7 +361,7 @@
                                       :select {:name :name}
                                       :from :contractors}}})
 
-    (test-sql 29
+    (test-sql 30
               "SELECT name FROM employees UNION ALL SELECT name FROM contractors"
               {:select {:name :name}
                :from :employees

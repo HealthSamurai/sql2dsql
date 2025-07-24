@@ -231,8 +231,15 @@
 ;; ============================
 
 (defmethod stmt->dsql :ResTarget [x & [opts]]
-  (let [res-target (:ResTarget x)]
-    (stmt->dsql (:val res-target) (assoc opts :name (:name res-target)))))
+  (let [res-target (:ResTarget x)
+        name (:name res-target)
+        val (:val res-target)]
+    (if (nil? name)
+      (stmt->dsql val opts)
+      [(keyword name) (stmt->dsql val (assoc opts :as-stmt? true))]
+      )
+    )
+  )
 
 ;; ============================
 ;; COLUMN REFERENCES
@@ -253,7 +260,10 @@
 
 (defmethod stmt->dsql :ColumnRef [x & [opts]]
   (cond
-    (or (:whereClause? opts) (:join? opts) (:order-by? opts) (:a-expr? opts) (:distinctClause? opts))
+    (or (:whereClause? opts) (:join? opts) (:order-by? opts)
+        (:a-expr? opts) (:distinctClause? opts) (:isFuncArg? opts)
+        (:as-stmt? opts)
+        )
       (keyword (string/join "." (map #(-> % :String :sval) (:fields (:ColumnRef x)))))
     :else
       (let [column-ref (:ColumnRef x)
@@ -332,16 +342,28 @@
 ;; ============================
 ;;
 (defn funcCall-on-distinct [func-name args & [opts]]
-  (let [arguments (mapv #(stmt->dsql % (assoc opts :isFuncArg? true)) args)
+  (let [arguments (mapv #(stmt->dsql % opts) args)
         arg-set (into [:pg/columns] arguments)
         name (if-let [name (:name opts)] (keyword name) func-name)]
     [name [func-name [:distinct arg-set]]]))
 
 (defn funcCall-on-agg_star [func-name & [opts]]
-  (let [column-name (or (some-> opts :name keyword) func-name)]
+  (if (:as-stmt? opts)
     (if (= func-name :count)
-      [column-name ^:pg/fn [:pg/count*]]
-      [column-name ^:pg/fn [func-name "*"]])))
+        [:pg/count*]
+        [func-name "*"])
+    (if (= func-name :count)
+      [:count [:pg/count*]]
+      (with-meta [func-name "*"] {:pg/fn true}))
+    )
+  )
+
+(defn funcCall-common [x func-name & [opts]]
+  (let [args (mapv #(stmt->dsql % opts) (-> x :FuncCall :args))
+        func (into [func-name] args)]
+    (with-meta func {:pg/fn true})
+    )
+  )
 
 (defmethod stmt->dsql :FuncCall [x & [opts]]
   (let [opts (assoc opts :isFuncArg? true)
@@ -350,10 +372,8 @@
       (funcCall-on-distinct func-name (-> x :FuncCall :args) opts)
       (if (-> x :FuncCall :agg_star)
         (funcCall-on-agg_star func-name opts)
-        (let [args (mapv #(stmt->dsql % opts) (-> x :FuncCall :args))
-              func (into [func-name] args)]
-            (with-meta func {:pg/fn true})
-        )))))
+        (funcCall-common x func-name opts)
+        ))))
 
 ;; ============================
 ;; SQL VALUE FUNCTIONS
