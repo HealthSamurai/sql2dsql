@@ -60,6 +60,42 @@
            (= (first x) :right-join)
            (= (first x) :join))))
 
+;; =======================================================================
+;; 4. MAIN METHODS
+;; =======================================================================
+
+;; ============================
+;; EXPLAIN STATEMENTS
+;; ============================
+
+(defmethod stmt->dsql :ExplainStmt [x & [opts]]
+  (let [explain-stmt (:ExplainStmt x)]
+    (merge {:explain (into {} (mapv #(stmt->dsql % opts) (:options explain-stmt)))}
+           (stmt->dsql (:query explain-stmt) opts))))
+
+;; ============================
+;; DEF ELEMENTS
+;; ============================
+
+(defmethod stmt->dsql :DefElem [x & [_]]
+  (let [def-elem (:DefElem x)]
+    [(keyword (:defname def-elem)) true]))
+
+;; ============================
+;; SUBLINKS
+;; ============================
+
+(defmethod stmt->dsql :SubLink [x & [opts]]
+  (let [sublink (:SubLink x)
+        subselect (:subselect sublink)
+        base-result (stmt->dsql subselect opts)]
+    (merge {:ql/type :pg/sub-select}
+           (dissoc base-result :ql/type))))
+
+;; ============================
+;; SELECT STATEMENTS
+;; ============================
+
 (defn handle-target-list [select-stmt & [opts]]
   (let [target-list (:targetList select-stmt)]
     (if (only-star? target-list)
@@ -85,20 +121,12 @@
 (defn vl-transform [lst & [opts]]
   (into [] (map #(stmt->dsql % opts) (-> lst :List :items))))
 
-(defn handle-valuesLists [valuesLists & [opts]]
+(defn handle-values-lists [valuesLists & [opts]]
   (let [max-length (reduce max (map vl-get-size valuesLists))
         keys_ (mapv (comp keyword #(str "k" %)) (range 1 (inc max-length)))]
     {:ql/type :pg/values
      :keys keys_
      :values (into [] (map (fn [x] (zipmap keys_ (vl-transform x opts))) valuesLists))}))
-
-(defn get-op-type [op]
-  (case op
-    "SETOP_UNION" :union
-    ("SETOP_UNION_ALL" "SETOP_UNIONALL") :union-all
-    "SETOP_INTERSECT" :intersect
-    "SETOP_EXCEPT" :except
-    (throw (Exception. ^String (str "Unknown set operation: " op)))))
 
 (defn process-with-clause [select-stmt x & [opts]]
   {:ql/type :pg/cte
@@ -137,6 +165,14 @@
         (into {} q))))
   )
 
+(defn get-op-type [op]
+  (case op
+    "SETOP_UNION" :union
+    ("SETOP_UNION_ALL" "SETOP_UNIONALL") :union-all
+    "SETOP_INTERSECT" :intersect
+    "SETOP_EXCEPT" :except
+    (throw (Exception. ^String (str "Unknown set operation: " op)))))
+
 (defn process-op [select-stmt & [opts]]
   (let [op-key (get-op-type (:op select-stmt))
         ;; Handle potentially unwrapped SelectStmt nodes
@@ -171,30 +207,10 @@
             true (assoc op-key {right-table-name right-val})))
   )
 
-;; =======================================================================
-;; 4. MAIN METHODS
-;; =======================================================================
-
-(defmethod stmt->dsql :ExplainStmt [x & [opts]]
-  (let [explain-stmt (:ExplainStmt x)]
-    (merge {:explain (into {} (mapv #(stmt->dsql % opts) (:options explain-stmt)))}
-           (stmt->dsql (:query explain-stmt) opts))))
-
-(defmethod stmt->dsql :DefElem [x & [_]]
-  (let [def-elem (:DefElem x)]
-    [(keyword (:defname def-elem)) true]))
-
-(defmethod stmt->dsql :SubLink [x & [opts]]
-  (let [sublink (:SubLink x)
-        subselect (:subselect sublink)
-        base-result (stmt->dsql subselect opts)]
-    (merge {:ql/type :pg/sub-select}
-           (dissoc base-result :ql/type))))
-
 (defmethod stmt->dsql :SelectStmt [x & [opts]]
   (let [select-stmt (:SelectStmt x)]
     (cond
-      (:valuesLists select-stmt) (handle-valuesLists (:valuesLists select-stmt) (assoc opts :val-lists true))
+      (:valuesLists select-stmt) (handle-values-lists (:valuesLists select-stmt) (assoc opts :val-lists true))
       (and (:withClause select-stmt) (not (:with-clause-processed? opts))) (process-with-clause select-stmt x opts)
       (not= (:op select-stmt) "SETOP_NONE") (process-op select-stmt opts)
       :else
@@ -210,9 +226,17 @@
     )
   )
 
+;; ============================
+;; RES TARGETS
+;; ============================
+
 (defmethod stmt->dsql :ResTarget [x & [opts]]
   (let [res-target (:ResTarget x)]
     (stmt->dsql (:val res-target) (assoc opts :name (:name res-target)))))
+
+;; ============================
+;; COLUMN REFERENCES
+;; ============================
 
 (defn get-column-name [column-ref & [opts]]
   (if (> (count (:fields column-ref)) 1)
@@ -238,6 +262,10 @@
     )
   )
 
+;; ============================
+;; A_Expr EXPRESSIONS
+;; ============================
+
 (def operators {"->>" :jsonb/->>
                 "#>>" :jsonb/#>>
                 "~~*" :ilike})
@@ -253,10 +281,18 @@
       [column-name expr]
       expr)))
 
+;; ============================
+;; RANGE VARIABLES
+;; ============================
+
 (defmethod stmt->dsql :RangeVar [x & [_]]
   (if-let [aliasname (-> x :RangeVar :alias :aliasname)]
     {(keyword aliasname) (keyword (-> x :RangeVar :relname))}
     (keyword (-> x :RangeVar :relname))))
+
+;; ============================
+;; PARAMETER REFERENCES
+;; ============================
 
 (defmethod stmt->dsql :ParamRef [x & [opts]]
   (if-let [param (nth (:params opts) (dec (-> x :ParamRef :number)) nil)]
@@ -264,6 +300,10 @@
       [(keyword (:name opts)) [:pg/param param]]
       [:pg/param param])
     (throw (Exception. ^String (str "No parameter found: " (dec (-> x :ParamRef :number)))))))
+
+;; ============================
+;; ARRAY CONSTANTS
+;; ============================
 
 (defn parse-arr [arr]
   (mapv (fn [k] (let [x (string/trim k)]
@@ -287,6 +327,10 @@
       :else
       (throw (Exception. ^String (str "Unsupported A_Const: " aconst))))))
 
+;; ============================
+;; 5. FUNCTION CALLS
+;; ============================
+;;
 (defn funcCall-on-distinct [func-name args & [opts]]
   (let [arguments (mapv #(stmt->dsql % (assoc opts :isFuncArg? true)) args)
         arg-set (into [:pg/columns] arguments)
@@ -311,11 +355,19 @@
             (with-meta func {:pg/fn true})
         )))))
 
+;; ============================
+;; SQL VALUE FUNCTIONS
+;; ============================
+
 (defmethod stmt->dsql :SQLValueFunction [x & [opts]]
   (let [f (keyword (string/replace (-> x :SQLValueFunction :op) "SVFOP_" ""))]
     (if (:name opts)
       [(keyword (:name opts)) f]
       f)))
+
+;; ============================
+;; JOIN EXPRESSIONS
+;; ============================
 
 (defmethod stmt->dsql :JoinExpr [x & [opts]]
   (let [next-opts (assoc opts :join? true)
@@ -328,6 +380,10 @@
         quals (stmt->dsql (-> x :JoinExpr :quals) next-opts)]
     [jointype l r quals]))
 
+;; ============================
+;; BOOLEAN EXPRESSIONS
+;; ============================
+
 (defmethod stmt->dsql :BoolExpr [x & [opts]]
   (let [boolop (case (-> x :BoolExpr :boolop)
                  "AND_EXPR" :and
@@ -336,13 +392,25 @@
         args (map (fn [arg] (stmt->dsql arg opts)) (-> x :BoolExpr :args))]
     (vec (conj args boolop))))
 
+;; ============================
+;; NULL TESTS
+;; ============================
+
 (defmethod stmt->dsql :NullTest [x & [opts]]
   (let [arg (stmt->dsql (-> x :NullTest :arg) opts)]
     [:is arg nil]))
 
+;; ============================
+;; SORT BY EXPRESSIONS
+;; ============================
+
 (defmethod stmt->dsql :SortBy [x & [opts]]
   (let [sortby (-> x :SortBy)]
     (stmt->dsql (:node sortby) (assoc opts :order-by? true))))
+
+;; ============================
+;; TYPE CASTS
+;; ============================
 
 (defmethod stmt->dsql :TypeCast [x & [opts]]
   (let [type-cast (:TypeCast x)
@@ -350,9 +418,17 @@
         typname (string/join  "." (map #(-> % :String :sval) (-> type-cast :typeName :names)))]
     [:pg/cast arg (keyword typname)]))
 
+;; ============================
+;; RANGE SUBSELECTS
+;; ============================
+
 (defmethod stmt->dsql :RangeSubselect [x & [opts]]
   (let [x (:RangeSubselect x) subquery (:subquery x)]  ;; alias (:alias x) ; develop alias logic
     (assoc (stmt->dsql subquery opts) :alias :to-be-implemented)))
+
+;; ============================
+;; DEFAULT HANDLER
+;; ============================
 
 (defmethod stmt->dsql :default [_ & [_]] :???)
 
