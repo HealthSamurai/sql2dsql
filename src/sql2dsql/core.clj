@@ -1,14 +1,31 @@
 (ns sql2dsql.core
   (:require
-   [clojure.data.json :as json]
-   [clojure.string :as string])
+    [clojure.data.json :as json]
+    [clojure.string :as string])
   (:import
-   [com.example.pgquery PgQuery]))
+    [com.example.pgquery PgQuery]))
+
+;; =======================================================================
+;; 1. PARSE SQL
+;; =======================================================================
 
 (defn parse-sql [query]
   (-> query
       PgQuery/parse
       (json/read-str :key-fn keyword)))
+
+;; =======================================================================
+;; 2. MULTIMETHOD
+;; =======================================================================
+
+(defmulti stmt->dsql (fn [x & [_]]
+                       (cond
+                         (map? x) (ffirst x)
+                         :else :unknown)))
+
+;; =======================================================================
+;; 3. HELPERS
+;; =======================================================================
 
 (defn star? [column-ref]
   (not (empty? (filter :A_Star (:fields column-ref)))))
@@ -35,7 +52,7 @@
               table (second (first r))]
           (assoc (assoc-in acc [jointype alias] {:table table
                                                  :on quals})
-                 :from l))))))
+            :from l))))))
 
 (defn join? [x]
   (and (vector? x)
@@ -43,23 +60,13 @@
            (= (first x) :right-join)
            (= (first x) :join))))
 
-(defmulti stmt->dsql (fn [x & [opts]] (ffirst x)))
-
-(defmethod stmt->dsql :ExplainStmt [x & [opts]]
-  (let [explain-stmt (:ExplainStmt x)]
-    (merge {:explain (into {} (mapv #(stmt->dsql % opts) (:options explain-stmt)))}
-           (stmt->dsql (:query explain-stmt) opts))))
-
-(defmethod stmt->dsql :DefElem [x & [opts]]
-  (let [def-elem (:DefElem x)]
-    [(keyword (:defname def-elem)) true]))
-
 (defn handle-target-list [select-stmt & [opts]]
   (let [target-list (:targetList select-stmt)]
     (if (only-star? target-list)
       :*
-      (into {} (map-indexed (fn [i x] (stmt->dsql x (assoc opts :column (inc i))))
-                            target-list)))))
+      (let [fun (fn [i x] (stmt->dsql x (assoc opts :column (inc i))))
+            res (map-indexed fun target-list)]
+        (into {} res)))))
 
 (defn select-distinct-on [select-stmt & [opts]]
   (if (vector? (:distinctClause select-stmt))
@@ -68,15 +75,9 @@
         {:select-distinct (handle-target-list select-stmt opts)}
         {:select
          (let [target (handle-target-list select-stmt opts)
-               meta_ {:distinct-on (into [] (map (fn [x] (stmt->dsql x (assoc opts :distinctClause? true ))) distinct-on))}]
-           (with-meta target {:pg/projection meta_})
-           )
-         }
-        )
-      )
-    {:select (handle-target-list select-stmt opts)}
-    )
-  )
+               meta_ {:distinct-on (into [] (map (fn [x] (stmt->dsql x (assoc opts :distinctClause? true))) distinct-on))}]
+           (with-meta target {:pg/projection meta_}))}))
+    {:select (handle-target-list select-stmt opts)}))
 
 (defn vl-get-size [lst]
   (-> lst :List :items count))
@@ -89,41 +90,125 @@
         keys_ (mapv (comp keyword #(str "k" %)) (range 1 (inc max-length)))]
     {:ql/type :pg/values
      :keys keys_
-     :values (into [] (map (fn [x] (zipmap keys_ (vl-transform x opts))) valuesLists))
-     }
-    )
+     :values (into [] (map (fn [x] (zipmap keys_ (vl-transform x opts))) valuesLists))}))
+
+(defn get-op-type [op]
+  (case op
+    "SETOP_UNION" :union
+    ("SETOP_UNION_ALL" "SETOP_UNIONALL") :union-all
+    "SETOP_INTERSECT" :intersect
+    "SETOP_EXCEPT" :except
+    (throw (Exception. ^String (str "Unknown set operation: " op)))))
+
+(defn process-with-clause [select-stmt x & [opts]]
+  {:ql/type :pg/cte
+   :with (into {}
+               (map (fn [cte]
+                      [(keyword (:ctename (:CommonTableExpr cte)))
+                       (stmt->dsql (:ctequery (:CommonTableExpr cte)) (assoc opts :with-clause-processed? true))])
+                    (:ctes (:withClause select-stmt))))
+   :select (stmt->dsql x (assoc opts :with-clause-processed? true))})
+
+(defn process-from-clause [select-stmt & [opts]]
+  (let [from-clause (:fromClause select-stmt)
+        result (if (= 1 (count from-clause))
+                 (stmt->dsql (first from-clause) opts)
+                 (let [q (mapv (fn [x] (stmt->dsql x opts)) from-clause)]
+                   (into {} q)))]
+    (if (join? result)
+      (process-join result)
+      {:from result}))
   )
+
+(defn process-group-by-clause [select-stmt & [opts]]
+  (into {} (map-indexed
+             (fn [i x] (stmt->dsql x (assoc opts :column (inc i) :group-by? true)))
+             (:groupClause select-stmt)
+             )
+        )
+  )
+
+(defn process-sort-clause [select-stmt & [opts]]
+  (let [sort-clause (:sortClause select-stmt)]
+    (if (= 1 (count sort-clause))
+      (stmt->dsql (first sort-clause) opts)
+      (let [q (mapv (fn [x] (stmt->dsql x opts))
+                    sort-clause)]
+        (into {} q))))
+  )
+
+(defn process-op [select-stmt & [opts]]
+  (let [op-key (get-op-type (:op select-stmt))
+        ;; Handle potentially unwrapped SelectStmt nodes
+        l-arg (if (:SelectStmt (:larg select-stmt))
+                (:larg select-stmt)
+                {:SelectStmt (:larg select-stmt)})
+        r-arg (if (:SelectStmt (:rarg select-stmt))
+                (:rarg select-stmt)
+                {:SelectStmt (:rarg select-stmt)})
+        l-result (stmt->dsql l-arg opts)
+        r-result (stmt->dsql r-arg opts)
+        ;; The left side provides the base structure
+        left-select (if (map? l-result) (:select l-result) nil)
+        left-from (if (map? l-result) (:from l-result) nil)
+        ;; Extract the table name from the right side's FROM clause
+        right-table-name (cond
+                           (and (map? r-result) (keyword? (:from r-result)))
+                           (:from r-result)
+
+                           (and (map? r-result) (map? (:from r-result)))
+                           (first (keys (:from r-result)))
+
+                           :else
+                           :right)
+        ;; Add :ql/type :pg/sub-select to the right side
+        right-val (if (map? r-result)
+                    (assoc r-result :ql/type :pg/sub-select)
+                    r-result)]
+    (cond-> {}
+            left-select (assoc :select left-select)
+            left-from (assoc :from left-from)
+            true (assoc op-key {right-table-name right-val})))
+  )
+
+;; =======================================================================
+;; 4. MAIN METHODS
+;; =======================================================================
+
+(defmethod stmt->dsql :ExplainStmt [x & [opts]]
+  (let [explain-stmt (:ExplainStmt x)]
+    (merge {:explain (into {} (mapv #(stmt->dsql % opts) (:options explain-stmt)))}
+           (stmt->dsql (:query explain-stmt) opts))))
+
+(defmethod stmt->dsql :DefElem [x & [_]]
+  (let [def-elem (:DefElem x)]
+    [(keyword (:defname def-elem)) true]))
+
+(defmethod stmt->dsql :SubLink [x & [opts]]
+  (let [sublink (:SubLink x)
+        subselect (:subselect sublink)
+        base-result (stmt->dsql subselect opts)]
+    (merge {:ql/type :pg/sub-select}
+           (dissoc base-result :ql/type))))
 
 (defmethod stmt->dsql :SelectStmt [x & [opts]]
   (let [select-stmt (:SelectStmt x)]
-    (if (:valuesLists select-stmt)
-      (handle-valuesLists (:valuesLists select-stmt) (assoc opts :val-lists true))
+    (cond
+      (:valuesLists select-stmt) (handle-valuesLists (:valuesLists select-stmt) (assoc opts :val-lists true))
+      (and (:withClause select-stmt) (not (:with-clause-processed? opts))) (process-with-clause select-stmt x opts)
+      (not= (:op select-stmt) "SETOP_NONE") (process-op select-stmt opts)
+      :else
       (cond->
         (select-distinct-on select-stmt opts)
-        (:fromClause select-stmt) (merge (let [from-clause (:fromClause select-stmt)
-                                               result (if (= 1 (count from-clause))
-                                                        (stmt->dsql (first from-clause) opts)
-                                                        (let [q (mapv (fn [x] (stmt->dsql x opts))
-                                                                      from-clause)]
-                                                          (into {} q)))]
-                                           (if (join? result)
-                                             (process-join result)
-                                             {:from result})))
-        (:whereClause select-stmt) (assoc :where
-                                          (stmt->dsql (:whereClause select-stmt) (assoc opts :whereClause? true)))
-        (:groupClause select-stmt) (assoc :group-by
-                                          (into {}
-                                                (map-indexed (fn [i x] (stmt->dsql x (assoc opts :column (inc i))))
-                                                             (:groupClause select-stmt))))
-        (:sortClause select-stmt) (assoc :order-by
-                                         (let [sort-clause (:sortClause select-stmt)]
-                                           (if (= 1 (count sort-clause))
-                                             (stmt->dsql (first sort-clause) opts)
-                                             (let [q (mapv (fn [x] (stmt->dsql x opts))
-                                                           sort-clause)]
-                                               (into {} q)))))
+        (:fromClause select-stmt) (merge (process-from-clause select-stmt opts))
+        (:whereClause select-stmt) (assoc :where (stmt->dsql (:whereClause select-stmt) (assoc opts :whereClause? true)))
+        (:groupClause select-stmt) (assoc :group-by (process-group-by-clause select-stmt opts))
+        (:sortClause select-stmt) (assoc :order-by (process-sort-clause select-stmt opts))
         (:limitCount select-stmt) (assoc :limit (stmt->dsql (:limitCount select-stmt)))
-      ))))
+        )
+      )
+    )
+  )
 
 (defmethod stmt->dsql :ResTarget [x & [opts]]
   (let [res-target (:ResTarget x)]
@@ -134,13 +219,13 @@
     (or (some-> (:name opts) keyword)
         (keyword (str "column-" (:column opts))))
     (or
-     (some-> (:name opts) keyword)
-     (-> column-ref
-         :fields
-         first
-         :String
-         :sval
-         keyword))))
+      (some-> (:name opts) keyword)
+      (-> column-ref
+          :fields
+          first
+          :String
+          :sval
+          keyword) )))
 
 (defmethod stmt->dsql :ColumnRef [x & [opts]]
   (cond
@@ -168,7 +253,7 @@
       [column-name expr]
       expr)))
 
-(defmethod stmt->dsql :RangeVar [x & [opts]]
+(defmethod stmt->dsql :RangeVar [x & [_]]
   (if-let [aliasname (-> x :RangeVar :alias :aliasname)]
     {(keyword aliasname) (keyword (-> x :RangeVar :relname))}
     (keyword (-> x :RangeVar :relname))))
@@ -178,7 +263,7 @@
     (if (:name opts)
       [(keyword (:name opts)) [:pg/param param]]
       [:pg/param param])
-    (throw (Exception. (str "No parameter found: " (dec (-> x :ParamRef :number)))))))
+    (throw (Exception. ^String (str "No parameter found: " (dec (-> x :ParamRef :number)))))))
 
 (defn parse-arr [arr]
   (mapv (fn [k] (let [x (string/trim k)]
@@ -189,7 +274,6 @@
         (string/split arr #",")))
 
 (defmethod stmt->dsql :A_Const [x & [opts]]
-  ;; todo: need to check all [x]val
   (let [aconst (:A_Const x)]
     (cond
       (:ival aconst) (:ival (:ival aconst))
@@ -199,31 +283,33 @@
                          (parse-arr arr)
                          (if (or (:isFuncArg? opts) (:val-lists opts))
                            [:pg/sql (str \' sval \')]
-                           sval
-                           )
-                         )
-                       )
+                           sval)))
       :else
-      (throw (Exception. (str "Unsupported A_Const: " aconst))))))
+      (throw (Exception. ^String (str "Unsupported A_Const: " aconst))))))
+
+(defn funcCall-on-distinct [func-name args & [opts]]
+  (let [arguments (mapv #(stmt->dsql % (assoc opts :isFuncArg? true)) args)
+        arg-set (into [:pg/columns] arguments)
+        name (if-let [name (:name opts)] (keyword name) func-name)]
+    [name [func-name [:distinct arg-set]]]))
+
+(defn funcCall-on-agg_star [func-name & [opts]]
+  (let [column-name (or (some-> opts :name keyword) func-name)]
+    (if (= func-name :count)
+      [column-name ^:pg/fn [:pg/count*]]
+      [column-name ^:pg/fn [func-name "*"]])))
 
 (defmethod stmt->dsql :FuncCall [x & [opts]]
   (let [opts (assoc opts :isFuncArg? true)
-        funcname (-> x :FuncCall :funcname first :String :sval keyword)
-        columnname (or (some-> opts :name keyword) funcname)]
+        func-name (-> x :FuncCall :funcname first :String :sval keyword)]
     (if (-> x :FuncCall :agg_distinct)
-      (let [arguments (mapv #(last (stmt->dsql % (assoc opts :distinctClause true))) (-> x :FuncCall :args))
-            arg-set (into [:pg/columns] arguments)
-            name (if-let [name (:name opts)] (keyword name) funcname)]
-         [name [funcname [:distinct arg-set]]])         ;; always returns "func(...) as name"
+      (funcCall-on-distinct func-name (-> x :FuncCall :args) opts)
       (if (-> x :FuncCall :agg_star)
-        (if (= funcname :count)
-          [columnname ^:pg/fn [:pg/count*]]
-          [columnname ^:pg/fn [funcname "*"]])
-        (into [funcname] (mapv #(stmt->dsql % opts) (-> x :FuncCall :args)))
-        )
-      )
-    )
-  )
+        (funcCall-on-agg_star func-name opts)
+        (let [args (mapv #(stmt->dsql % opts) (-> x :FuncCall :args))
+              func (into [func-name] args)]
+            (with-meta func {:pg/fn true})
+        )))))
 
 (defmethod stmt->dsql :SQLValueFunction [x & [opts]]
   (let [f (keyword (string/replace (-> x :SQLValueFunction :op) "SVFOP_" ""))]
@@ -262,24 +348,17 @@
   (let [type-cast (:TypeCast x)
         arg (stmt->dsql (:arg type-cast) opts)
         typname (string/join  "." (map #(-> % :String :sval) (-> type-cast :typeName :names)))]
-    
     [:pg/cast arg (keyword typname)]))
 
-
-; todo: develop alias logic
 (defmethod stmt->dsql :RangeSubselect [x & [opts]]
-  (let [x (:RangeSubselect x) subquery (:subquery x) alias (:alias x)]
-    (assoc (stmt->dsql subquery opts) :alias :to-be-implemented)
-    )
-  )
+  (let [x (:RangeSubselect x) subquery (:subquery x)]  ;; alias (:alias x) ; develop alias logic
+    (assoc (stmt->dsql subquery opts) :alias :to-be-implemented)))
 
-(defmethod stmt->dsql :default [x & [opts]]
-  (prn "default" x)
-  :???)
+(defmethod stmt->dsql :default [_ & [_]] :???)
 
 (defn ->dsql [sql & params]
   (mapv (fn [{stmt :stmt}] (stmt->dsql stmt {:params params})) (:stmts (parse-sql sql))))
 
 (comment
   (->dsql "select * from patient where id = '1'")
-)
+  )
