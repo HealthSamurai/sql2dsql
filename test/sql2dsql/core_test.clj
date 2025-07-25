@@ -367,4 +367,46 @@
                :from :employees
                :union-all {:contractors {:ql/type :pg/sub-select
                                          :select {:name :name}
-                                         :from :contractors}}})))
+                                         :from :contractors}}}))
+
+  (testing "Additional edge cases"
+    (test-sql 31
+              "SELECT COUNT(*) as total, MAX(salary) as max_sal, MIN(salary) as min_sal FROM employees"
+              {:select {:total [:pg/count*]
+                        :max_sal [:max :salary]
+                        :min_sal [:min :salary]}
+               :from :employees})
+
+    (test-sql 32
+              "SELECT id, name AS employee_name FROM users WHERE active = true"
+              {:select {:id :id, :employee_name :name}
+               :from :users
+               :where [:= :active true]})
+
+    (test-sql 33
+              "SELECT * FROM employees WHERE department_id IN (1, 2, 3)"
+              {:select :*
+               :from :employees
+               :where [:in :department_id [:pg/list 1 2 3]]})
+
+    (test-sql 34
+              "SELECT * FROM employees WHERE name LIKE 'John%'"
+              {:select :*
+               :from :employees
+               :where [:like :name "John%"]})
+
+    (test-sql 35
+              "SELECT CAST(salary AS TEXT) as salary_text FROM employees"
+              {:select {:salary_text [:pg/cast :salary :text]}
+               :from :employees})
+
+    (test-sql 36
+              "SELECT EXISTS(SELECT a as a FROM employees WHERE salary > 100000) as has_high_earners"
+              {:select {:has_high_earners
+                        {:ql/type :pg/sub-select,
+                         :select {:a :a},
+                         :from :employees,
+                         :where [:> :salary 100000]}}}
+              )
+    )
+)

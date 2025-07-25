@@ -271,18 +271,32 @@
 
 (def operators {"->>" :jsonb/->>
                 "#>>" :jsonb/#>>
-                "~~*" :ilike})
+                "~~*" :ilike
+                "~~" :like})
+
+(defn get-op-name [x]
+  (if (= (-> x :A_Expr :kind) "AEXPR_IN")
+    "in"
+    (-> x :A_Expr :name first :String :sval)))
 
 (defmethod stmt->dsql :A_Expr [x & [opts]]
   (let [opts (assoc opts :a-expr? true)
         lexpr (stmt->dsql (-> x :A_Expr :lexpr) opts)
         rexpr  (stmt->dsql (-> x :A_Expr :rexpr) opts)
-        opname (-> x :A_Expr :name first :String :sval)
+        opname (get-op-name x)
         op (or (get operators opname) (keyword opname))
         expr [op lexpr rexpr]]
     (if-let [column-name (some-> (:name opts) keyword)]
       [column-name expr]
       expr)))
+
+;; ============================
+;; LIST EXPRESSIONS
+;; ============================
+
+(defmethod stmt->dsql :List [x & [opts]]
+  (into [:pg/list] (map #(stmt->dsql % opts) (:items (:List x))))
+  )
 
 ;; ============================
 ;; RANGE VARIABLES
@@ -319,6 +333,7 @@
 (defmethod stmt->dsql :A_Const [x & [opts]]
   (let [aconst (:A_Const x)]
     (cond
+      (:boolval aconst) (:boolval (:boolval aconst))
       (:ival aconst) (:ival (:ival aconst))
       (:fval aconst) (:fval (:fval aconst))
       (:sval aconst) (let [sval (:sval (:sval aconst))]
