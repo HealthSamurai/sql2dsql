@@ -173,7 +173,7 @@
                :where [:and
                        [:>
                         [:pg/cast [:jsonb/#>> :resource [:message :datetime]] :pg_catalog.timestamp]
-                        [:- [:now] [:pg/cast "1 week" :pg_catalog.interval]]]
+                        [:- [:now] [:pg/cast [:pg/sql "'1 week'"] :pg_catalog.interval]]]
                        [:ilike :id [:pg/param "%Z%.CV"]]]}))
 
   (testing "Function calls"
@@ -322,14 +322,14 @@
                SELECT * FROM high_earners"
               {:ql/type :pg/cte
                :with {:dept_avg {:select {:dept_id :department_id
-                                          :avg_sal [:avg :salary]}
+                                          :avg_sal ^:pg/fn [:avg :salary]}
                                  :from :employee
-                                 :group-by {:dept_id :department_id}}
+                                 :group-by {:department_id :department_id}}
                       :high_earners {:select :*
                                      :from :employee
                                      :where [:> :salary
                                              {:ql/type :pg/sub-select
-                                              :select [:avg :salary]
+                                              :select {:avg ^:pg/fn [:avg :salary]}
                                               :from :dept_avg
                                               :where [:= :dept_avg.dept_id :employee.department_id]}]}}
                :select {:select :*

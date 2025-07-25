@@ -165,17 +165,15 @@
         (into {} q))))
   )
 
-(defn get-op-type [op]
+(defn get-op-type [op all]
   (case op
-    "SETOP_UNION" :union
-    ("SETOP_UNION_ALL" "SETOP_UNIONALL") :union-all
+    "SETOP_UNION" (if all :union-all :union)
     "SETOP_INTERSECT" :intersect
     "SETOP_EXCEPT" :except
     (throw (Exception. ^String (str "Unknown set operation: " op)))))
 
 (defn process-op [select-stmt & [opts]]
-  (let [op-key (get-op-type (:op select-stmt))
-        ;; Handle potentially unwrapped SelectStmt nodes
+  (let [op-key (get-op-type (:op select-stmt) (:all select-stmt))
         l-arg (if (:SelectStmt (:larg select-stmt))
                 (:larg select-stmt)
                 {:SelectStmt (:larg select-stmt)})
@@ -189,14 +187,9 @@
         left-from (if (map? l-result) (:from l-result) nil)
         ;; Extract the table name from the right side's FROM clause
         right-table-name (cond
-                           (and (map? r-result) (keyword? (:from r-result)))
-                           (:from r-result)
-
-                           (and (map? r-result) (map? (:from r-result)))
-                           (first (keys (:from r-result)))
-
-                           :else
-                           :right)
+                           (and (map? r-result) (keyword? (:from r-result))) (:from r-result)
+                           (and (map? r-result) (map? (:from r-result))) (first (keys (:from r-result)))
+                           :else :right)
         ;; Add :ql/type :pg/sub-select to the right side
         right-val (if (map? r-result)
                     (assoc r-result :ql/type :pg/sub-select)
@@ -210,7 +203,7 @@
 (defmethod stmt->dsql :SelectStmt [x & [opts]]
   (let [select-stmt (:SelectStmt x)]
     (cond
-      (:valuesLists select-stmt) (handle-values-lists (:valuesLists select-stmt) (assoc opts :val-lists true))
+      (:valuesLists select-stmt) (handle-values-lists (:valuesLists select-stmt) (assoc opts :val-lists? true))
       (and (:withClause select-stmt) (not (:with-clause-processed? opts))) (process-with-clause select-stmt x opts)
       (not= (:op select-stmt) "SETOP_NONE") (process-op select-stmt opts)
       :else
@@ -331,7 +324,7 @@
       (:sval aconst) (let [sval (:sval (:sval aconst))]
                        (if-let [[_ arr] (re-matches #"\{(.*)\}" sval)]
                          (parse-arr arr)
-                         (if (or (:isFuncArg? opts) (:val-lists opts))
+                         (if (or (:isFuncArg? opts) (:val-lists? opts) (:type-cast? opts))
                            [:pg/sql (str \' sval \')]
                            sval)))
       :else
@@ -345,7 +338,10 @@
   (let [arguments (mapv #(stmt->dsql % opts) args)
         arg-set (into [:pg/columns] arguments)
         name (if-let [name (:name opts)] (keyword name) func-name)]
-    [name [func-name [:distinct arg-set]]]))
+    (if (:as-stmt? opts)
+      [func-name [:distinct arg-set]]
+      [name [func-name [:distinct arg-set]]]))
+  )
 
 (defn funcCall-on-agg_star [func-name & [opts]]
   (if (:as-stmt? opts)
@@ -354,26 +350,35 @@
         [func-name "*"])
     (if (= func-name :count)
       [:count [:pg/count*]]
-      (with-meta [func-name "*"] {:pg/fn true}))
+      [func-name (with-meta [func-name "*"] {:pg/fn true})])
     )
   )
 
-(defn funcCall-common [x func-name & [opts]]
+(defn funcCall-on-no-args [func-name & [_]]
+  (with-meta [func-name] {:pg/fn true})
+  )
+
+(defn funcCall-default [x func-name & [opts]]
   (let [args (mapv #(stmt->dsql % opts) (-> x :FuncCall :args))
-        func (into [func-name] args)]
-    (with-meta func {:pg/fn true})
+        func (into [func-name] args)
+        name (if-let [name (:name opts)] (keyword name) func-name)]
+    (if (and (:as-stmt? opts))
+      (with-meta func {:pg/fn true})
+      [name (with-meta func {:pg/fn true})])
     )
   )
 
 (defmethod stmt->dsql :FuncCall [x & [opts]]
   (let [opts (assoc opts :isFuncArg? true)
-        func-name (-> x :FuncCall :funcname first :String :sval keyword)]
-    (if (-> x :FuncCall :agg_distinct)
-      (funcCall-on-distinct func-name (-> x :FuncCall :args) opts)
-      (if (-> x :FuncCall :agg_star)
-        (funcCall-on-agg_star func-name opts)
-        (funcCall-common x func-name opts)
-        ))))
+        func-name (-> x :FuncCall :funcname first :String :sval keyword)
+        args (-> x :FuncCall :args)]
+    (cond
+      (-> x :FuncCall :agg_distinct) (funcCall-on-distinct func-name args opts)
+      (-> x :FuncCall :agg_star) (funcCall-on-agg_star func-name opts)
+      (empty? args) (funcCall-on-no-args func-name opts)
+      :else (funcCall-default x func-name opts)
+      )
+    ))
 
 ;; ============================
 ;; SQL VALUE FUNCTIONS
@@ -434,7 +439,7 @@
 
 (defmethod stmt->dsql :TypeCast [x & [opts]]
   (let [type-cast (:TypeCast x)
-        arg (stmt->dsql (:arg type-cast) opts)
+        arg (stmt->dsql (:arg type-cast) (assoc opts :type-cast? true))
         typname (string/join  "." (map #(-> % :String :sval) (-> type-cast :typeName :names)))]
     [:pg/cast arg (keyword typname)]))
 
