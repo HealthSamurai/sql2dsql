@@ -314,7 +314,7 @@
   (let [aconst (:A_Const x)]
     (cond
       (:boolval aconst) (:boolval (:boolval aconst))
-      (:ival aconst) (:ival (:ival aconst))
+      (:ival aconst) (if-let [r (-> aconst :ival :ival)] r 0)
       (:fval aconst) (:fval (:fval aconst))
       (:sval aconst) (let [sval (:sval (:sval aconst))]
                        (if-let [[_ arr] (re-matches #"\{(.*)\}" sval)]
@@ -438,54 +438,7 @@
   (let [x (:RangeSubselect x) subquery (:subquery x)]  ;; alias (:alias x) ; develop alias logic
     (assoc (stmt->dsql subquery opts) :alias :to-be-implemented)))
 
-;; ============================
-;; CREATE STATEMENTS
-;; ============================
 
-(defn base-create-stmt [create-stmt & [_]]
-  {:ql/type :pg/create-table
-   :table-name (-> create-stmt :relation :relname keyword)})
-
-(defn handle-columns-create-stmt [create-stmt & [opts]]
-  (let [cols (:tableElts create-stmt)]
-    (into {} (map #(stmt->dsql % opts) cols))))
-
-(defmethod stmt->dsql :CreateStmt [x & [opts]]
-  (let [create-stmt (:CreateStmt x)
-        base (base-create-stmt create-stmt opts)]
-   (cond-> base
-    (:tableElts create-stmt) (assoc :columns (handle-columns-create-stmt create-stmt opts))
-    (:if_not_exists create-stmt) (assoc :if-not-exists true) ;;todo: doesn't work, fix
-    (:inhRelations create-stmt) []
-    (:partspec create-stmt) [])))
-
-;; ============================
-;; COLUMN DEFINITION CLAUSE
-;; ============================
-
-(defmethod stmt->dsql :ColumnDef [x & [opts]]
-  (let [col (:ColumnDef x)
-        col-name (keyword (:colname col))
-        m #(-> % :String :sval)
-        col-type (string/join "." (map m (-> col :typeName :names))) ;;todo:handle type modifiers
-        ;is-local? (:is_local col)
-        constraints (map #(stmt->dsql % opts) (:constraints col))]
-    {col-name (into {:type col-type} constraints)}))
-
-;; ============================
-;; CONSTRAINTS
-;; ============================
-
-(defmethod stmt->dsql :Constraint [con & [opts]]
-  (let [con (:Constraint con)]
-    (if-let [con-type (:contype con)]
-      (case con-type
-      "CONSTR_PRIMARY" (if (:keys con)
-                         [:primary-key (map #() (:keys con))]   ;; todo: process keys
-                         [:primary-key true]
-                         )
-      :else (throw (Exception. ^String (str "Unimplemented"))))  ;; todo: handle other constraint types
-      (throw (Exception. ^String (str "No constraint type provided"))))))
 
 ;; ============================
 ;; DEFAULT HANDLER
