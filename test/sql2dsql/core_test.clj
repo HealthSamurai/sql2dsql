@@ -17,27 +17,39 @@
    `(test-sql ~num ~sql [] ~expected))
   ([num sql params expected]
    `(testing (str "Test " ~num ": " ~sql)
-      (let [result# (apply parse ~sql ~params)]
-        (is (= result# ~expected)
-            (str "\nTest " ~num " failed!"
-                 "\nExpected: " ~expected
-                 "\nActual:   " result#))))))
+      (let [result# (apply parse ~sql ~params)
+            passed?# (= result# ~expected)]
+        (do-report
+          {:type (if passed?# :pass :fail)
+           :message (str "\nTest " ~num " failed!"
+                         "\nExpected: " ~expected
+                         "\nActual:   " result#)
+           :expected ~expected
+           :actual result#})))))
 
 (defmacro test-sql-meta
   [num sql params expected]
   `(testing (str "Test " ~num ": " ~sql)
      (let [result# (apply parse ~sql ~params)
+           passed?# (= result# ~expected)
            meta-actual# (meta (:select result#))
            meta-expected# (meta (:select ~expected))]
-       (is (= result# ~expected)
-           (str "\nTest " ~num " failed!"
-                "\nExpected: " ~expected
-                "\nActual:   " result#))
-       (when (= result# ~expected)
-         (is (= meta-actual# meta-expected#)
-             (str "\nTest " ~num " metadata failed!"
-                  "\nExpected meta: " meta-expected#
-                  "\nActual meta:   " meta-actual#))))))
+       (do-report
+         {:type (if passed?# :pass :fail)
+          :message (str "\nTest " ~num " failed!"
+                        "\nExpected: " ~expected
+                        "\nActual:   " result#)
+          :expected ~expected
+          :actual result#})
+       (when passed?#
+         (let [meta-passed?# (= meta-actual# meta-expected#)]
+           (do-report
+             {:type (if meta-passed?# :pass :fail)
+              :message (str "\nTest " ~num " metadata failed!"
+                            "\nExpected meta: " meta-expected#
+                            "\nActual meta:   " meta-actual#)
+              :expected meta-expected#
+              :actual meta-actual#}))))))
 
 (deftest select-tests
   (testing "Basic SELECT queries"
@@ -410,3 +422,63 @@
               )
     )
 )
+
+(deftest create-table-tests
+  (testing "CREATE TABLE queries"
+    (test-sql 1
+              "CREATE TABLE projects (project_id INT PRIMARY KEY,\n    start_date DATE,\n    end_date DATE\n)"
+              {:ql/type :pg/create-table
+               :table-name :projects
+               :columns {:project_id {:type "pg_catalog.int4" :primary-key true}
+                         :start_date {:type "date"}
+                         :end_date {:type "date"}}})
+
+    (test-sql 2
+              "CREATE TABLE IF NOT EXISTS mytable
+              ( \"id\" text PRIMARY KEY , \"filelds\" jsonb , \"match_tags\" text[] , \"dedup_tags\" text[] )"
+              {:ql/type :pg/create-table
+               :if-not-exists true
+               :table-name :mytable
+               :columns {:id {:type :text, :primary-key true}
+                         :filelds {:type :jsonb}
+                         :match_tags {:type :text}
+                         :dedup_tags {:type :text}}})
+
+    (test-sql 3
+              "CREATE TABLE IF NOT EXISTS patient_000 partition of patient ( PRIMARY KEY (\"id\", \"partition\"))
+              for values from (0) to (1001) partition by range ( partition )"
+              {})
+
+    (test-sql 4
+              "CREATE TABLE mytable ( PRIMARY KEY (\"id\", \"partition\") )"
+              {})
+
+    (test-sql 5
+              "CREATE TABLE mytable
+              ( \"id\" uuid , \"partition\" int , \"resource\" jsonb , PRIMARY KEY (\"id\", \"partition\") )"
+              {})
+
+    (test-sql 6
+              "CREATE TABLE mytable
+              ( \"id\" uuid not null , \"version\" uuid not null ,
+              \"cts\" timestamptz not null DEFAULT current_timestamp ,
+              \"ts\" timestamptz not null DEFAULT current_timestamp ,
+              \"status\" resource_status not null , \"partition\" int not null ,
+              \"resource\" jsonb not null )"
+              {})
+
+    (test-sql 7
+              "CREATE UNLOGGED TABLE IF NOT EXISTS mytable
+              ( \"id\" text PRIMARY KEY , \"filelds\" jsonb , \"match_tags\" text[] , \"dedup_tags\" text[] )"
+              {})
+
+    (test-sql 8
+              "CREATE TABLE mytable ( \"a\" integer NOT NULL DEFAULT 8 )"
+              {})
+
+    (test-sql 9
+              "CREATE TABLE IF NOT EXISTS part
+              partition of whole for values from (0) to (400) partition by range ( partition )"
+              {})
+    )
+  )
