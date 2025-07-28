@@ -438,6 +438,73 @@
   (let [x (:RangeSubselect x) subquery (:subquery x)]  ;; alias (:alias x) ; develop alias logic
     (assoc (stmt->dsql subquery opts) :alias :to-be-implemented)))
 
+;; ============================
+;; CREATE STATEMENTS
+;; ============================
+
+(defn base-create-stmt [name & [_]]
+  {:ql/type :pg/create-table
+   :table-name name})
+
+(defn handle-table-elements [table-elems & [opts]]
+  (let [constraints (filter #(:Constraint %) table-elems)
+        columns (filter #(:ColumnDef %) table-elems)]
+    (cond->
+      {}
+      (not (empty?  constraints)) (assoc :constraint  (into {} (map #(stmt->dsql % opts) constraints)))
+      (not (empty? columns)) (assoc :columns (into {} (map #(stmt->dsql % opts) columns)) ))
+    )
+  )
+
+(def strategy-methods {"PARTITION_STRATEGY_RANGE" :range})
+
+;; now can only handle range partitioning
+(defn handle-partition [name part-spec part-bound & [opts]]
+  {:partition-of name
+   :partition-by {:method (get strategy-methods (:strategy part-spec))
+                  :expr (-> part-spec :partParams first :PartitionElem :name keyword)}
+   :for {:from (stmt->dsql (-> part-bound :lowerdatums first) opts)
+         :to (stmt->dsql (-> part-bound :upperdatums first) opts)}})
+
+
+(defmethod stmt->dsql :CreateStmt [x & [opts]]
+  (let [create-stmt (:CreateStmt x)
+        base (base-create-stmt (-> create-stmt :relation :relname keyword) opts)]
+    (cond->
+      base
+      (:if_not_exists create-stmt) (assoc :if-not-exists true)
+      (:tableElts create-stmt) (merge (handle-table-elements (:tableElts create-stmt) opts))
+      (:partspec create-stmt) (merge (handle-partition
+                                       (-> create-stmt :inhRelations first :RangeVar :relname)
+                                       (:partspec create-stmt)
+                                       (:partbound create-stmt) opts)))))
+
+;; ============================
+;; COLUMN DEFINITION CLAUSE
+;; ============================
+
+(defmethod stmt->dsql :ColumnDef [x & [opts]]
+  (let [col (:ColumnDef x)
+        col-name (keyword (:colname col))
+        m #(-> % :String :sval)
+        col-type (string/join "." (map m (-> col :typeName :names))) ;;todo:handle type modifiers
+        ;is-local? (:is_local col)
+        constraints (map #(stmt->dsql % opts) (:constraints col))]
+    {col-name (into {:type col-type} constraints)}))
+
+;; ============================
+;; CONSTRAINTS
+;; ============================
+
+(defmethod stmt->dsql :Constraint [con & [opts]]
+  (let [con (:Constraint con)]
+    (if-let [con-type (:contype con)]
+      (case con-type
+        "CONSTR_PRIMARY" (if (:keys con)
+                           {:primary-key (into [] (map #(-> % :String :sval keyword) (:keys con)))}
+                           [:primary-key true])
+        :else (throw (Exception. ^String (str "Unimplemented"))))  ;; todo: handle other constraint types
+      (throw (Exception. ^String (str "No constraint type provided"))))))
 
 
 ;; ============================

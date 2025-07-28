@@ -418,8 +418,146 @@
                         {:ql/type :pg/sub-select,
                          :select {:a :a},
                          :from :employees,
-                         :where [:> :salary 100000]}}}
-              )
-    )
-)
+                         :where [:> :salary 100000]}}})))
 
+(deftest create-table-tests
+  (testing "CREATE TABLE queries"
+    (test-sql 0
+              "CREATE TABLE \"MyTable\" ( \"a\" integer )"
+              {:ql/type :pg/create-table
+               :table-name :MyTable
+               :columns {:a {:type "pg_catalog.int4" }}})
+
+    (test-sql 1
+              "CREATE TABLE projects (project_id INT PRIMARY KEY,\n    start_date DATE,\n    end_date DATE\n)"
+              {:ql/type :pg/create-table
+               :table-name :projects
+               :columns {:project_id {:type "pg_catalog.int4" :primary-key true}
+                         :start_date {:type "date"}
+                         :end_date {:type "date"}}})
+
+    (test-sql 2
+              "CREATE TABLE IF NOT EXISTS mytable
+              ( \"id\" text PRIMARY KEY , \"filelds\" jsonb , \"match_tags\" text[] , \"dedup_tags\" text[] )"
+              {:ql/type :pg/create-table
+               :table-name :mytable
+               :if-not-exists true
+               :columns {:id {:type "text", :primary-key true}
+                         :filelds {:type "jsonb"}
+                         :match_tags {:type "text"}
+                         :dedup_tags {:type "text"}}})
+
+    (test-sql 3
+              "CREATE TABLE IF NOT EXISTS patient_000 partition of patient ( PRIMARY KEY (\"id\", \"partition\"))
+              for values from (0) to (1001) partition by range ( partition )"
+              {:ql/type :pg/create-table,
+               :table-name :patient_000,
+               :constraint {:primary-key [:id :partition]}
+               :if-not-exists true,
+               :partition-of "patient",
+               :partition-by {:method :range,
+                              :expr :partition},
+               :for {:from 0, :to 1001}})
+
+    (test-sql 4
+              "CREATE TABLE mytable ( PRIMARY KEY (\"id\", \"partition\") )"
+              {:ql/type :pg/create-table,
+               :table-name :mytable,
+               :constraint {:primary-key [:id :partition]}})
+
+    (test-sql 5
+              "CREATE TABLE mytable
+              ( \"id\" uuid , \"partition\" int , \"resource\" jsonb , PRIMARY KEY (\"id\", \"partition\") )"
+              {:ql/type :pg/create-table,
+               :table-name :mytable,
+               :constraint {:primary-key [:id :partition]}
+               :columns {:id {:type "uuid"}, :partition {:type "pg_catalog.int4"}, :resource {:type "jsonb"}}})
+
+    (test-sql 6
+              "CREATE TABLE mytable
+              ( \"id\" uuid not null , \"version\" uuid not null ,
+              \"cts\" timestamptz not null DEFAULT current_timestamp ,
+              \"ts\" timestamptz not null DEFAULT current_timestamp ,
+              \"status\" resource_status not null , \"partition\" int not null ,
+              \"resource\" jsonb not null )"
+              {:ql/type :pg/create-table
+               :table-name "mytable"
+               :columns {:id        [:uuid "not null"]
+                         :version   [:uuid "not null"]
+                         :cts       [:timestamptz "not null" :DEFAULT :current_timestamp]
+                         :ts        [:timestamptz "not null" :DEFAULT :current_timestamp]
+                         :status    [:resource_status "not null"]
+                         :partition [:int "not null"]
+                         :resource  [:jsonb "not null"]}})
+
+    (test-sql 7
+              "CREATE UNLOGGED TABLE IF NOT EXISTS mytable
+              ( \"id\" text PRIMARY KEY , \"filelds\" jsonb , \"match_tags\" text[] , \"dedup_tags\" text[] )"
+              {:ql/type :pg/create-table
+               :table-name "mytable"
+               :if-not-exists true
+               :unlogged true
+               :columns {:id          {:type "text" :primary-key true}
+                         :filelds     {:type "jsonb"}
+                         :match_tags  {:type "text[]"}
+                         :dedup_tags  {:type "text[]"}}})
+
+    (test-sql 8
+              "CREATE TABLE mytable ( \"a\" integer NOT NULL DEFAULT 8 )"
+              {:ql/type :pg/create-table
+               :table-name :mytable
+               :columns {:a {:type "integer" :not-null true :default 8}}})
+
+    (test-sql 9
+              "CREATE TABLE IF NOT EXISTS part partition of whole for values from (0) to (400) partition by range ( partition )"
+              {:ql/type :pg/create-table
+               :table-name "part"
+               :if-not-exists true
+               :partition-by {:method :range :expr :partition}
+               :partition-of "whole"
+               :for {:from 0 :to 400}}))
+
+    (test-sql 10
+              "CREATE INDEX IF NOT EXISTS users_id_idx ON users USING GIN ( ( resource->'a' ) , ( resource->'b' ) ) WHERE user.status = ?" "active"
+              {:ql/type :pg/index
+               :index :users_id_idx
+               :if-not-exists true
+               :concurrently true
+               :on :users
+               :using :GIN
+               :expr [[:resource-> :a] [:resource-> :b]]
+               :tablespace :mytbs
+               :with {:fillfactor 70}
+               :where ^:pg/op[:= :user.status "active"]})
+    (test-sql 11
+              "CREATE TABLE mytable ( \"ts\" timestamp NOT NULL DEFAULT current_timestamp , \"meta_status\" resource_status NOT NULL DEFAULT [\"?\" \"created\"] )"
+              {:ql/type :pg/create-table
+               :table-name "mytable"
+               :columns {:ts          {:type "timestamp"       :default :current_timestamp :not-null true}
+                         :meta_status {:type "resource_status" :default "created"          :not-null true}}})
+
+  (test-sql 12
+            "CREATE EXTENSION jsonknife"
+            {:ql/type :pg/create-extension
+             :name "jsonknife"})
+
+  (test-sql 13
+            "CREATE EXTENSION IF NOT EXISTS jsonknife SCHEMA ext"
+            {:ql/type :pg/create-extension
+             :name "jsonknife"
+             :schema "ext"
+             :if-not-exists true})
+
+  (test-sql 14
+            "CREATE TABLE table1 AS SELECT 1"
+            {:ql/type :pg/create-table-as
+             :table "table1"
+             :select {:ql/type :pg/select
+                      :select 1}})
+  (test-sql 15
+            "CREATE UNIQUE INDEX IF NOT EXISTS sdl_src_dst ON sdl_src_dst ( ( src ) , ( dst ) )"
+            {:ql/type :pg/index
+             :index   :sdl_src_dst
+             :unique  true
+             :on      :sdl_src_dst
+             :expr    [:src :dst]}))
