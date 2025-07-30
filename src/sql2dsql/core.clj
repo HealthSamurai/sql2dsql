@@ -79,6 +79,13 @@
   (let [def-elem (:DefElem x)]
     [(keyword (:defname def-elem)) true]))
 
+(defmethod stmt->dsql :DefElem [x & [_]]
+  (let [elem (:DefElem x) kind (:defname elem)]
+    (cond
+      (= kind "schema") [:schema (-> elem :arg :String :sval)]
+      (= kind "new_version") [:version (-> elem :arg :String :sval)]
+      :else [(keyword kind) true])))
+
 ;; ============================
 ;; SUBLINKS
 ;; ============================
@@ -355,11 +362,12 @@
 
 (defn func-call-default [x func-name & [opts]]
   (let [args (mapv #(stmt->dsql % opts) (-> x :FuncCall :args))
-        func (into [func-name] args)
+        func (with-meta (into [func-name] args) {:pg/fn true})
         name (if-let [name (:name opts)] (keyword name) func-name)]
-    (if (and (:as-stmt? opts))
-      (with-meta func {:pg/fn true})
-      [name (with-meta func {:pg/fn true})])))
+    (cond
+      (:as-stmt? opts) func
+      (:index-expr? opts) (into [:pg/call] func)
+      :else [name func])))
 
 (defmethod stmt->dsql :FuncCall [x & [opts]]
   (let [opts (assoc opts :func-arg? true)
@@ -466,7 +474,7 @@
      :for (case method
             :range  {:from (stmt->dsql (-> part-bound :lowerdatums first) opts)
                      :to (stmt->dsql (-> part-bound :upperdatums first) opts)}
-            :hash {:modulus (:modulus part-bound) })}))     ;;todo: fix, doesn't convert back to sql
+            :hash {:modulus (:modulus part-bound) })}))
 
 (def rel-persistence {"p" {:permanent true}
                       "t" {:temporary true}
@@ -507,12 +515,26 @@
   (let [col (:ColumnDef x)
         col-name (keyword (:colname col))
         col-type (get-col-type (:typeName col))
+        col-clause (:collClause col)
         constraints (map #(stmt->dsql % opts) (:constraints col))]
-      {col-name (reduce into [col-type] constraints)}))
+    {col-name
+     (if (nil? col-clause)
+       (reduce into [col-type] constraints)
+       [col-type "COLLATE" (-> col-clause :collname first :String :sval)])}))
 
 ;; ============================
 ;; CONSTRAINTS
 ;; ============================
+
+(def actions_ {"c" "CASCADE"
+               "a" false})
+
+(defn on-foreign [con & [_]]
+  (let [args (string/join (map #(-> % :String :sval) (:pk_attrs con)))]
+    (cond->
+      [(str "REFERENCE " (-> con :pktable :relname) "(" args ")")]
+      (get actions_ (:fk_upd_action con)) (conj (str "ON UPDATE " (get actions_ (:fk_upd_action con))))
+      (get actions_ (:fk_del_action con)) (conj (str "ON DELETE " (get actions_ (:fk_del_action con)))))))
 
 (defmethod stmt->dsql :Constraint [con & [opts]]
   (let [con (:Constraint con)]
@@ -520,10 +542,11 @@
       (case con-type
         "CONSTR_PRIMARY" (if (:keys con)
                            {:primary-key (into [] (map #(-> % :String :sval keyword) (:keys con)))}
-                           ["primary key"])
-        "CONSTR_NOTNULL" ["not null"]
+                           ["PRIMARY KEY"])
+        "CONSTR_NOTNULL" ["NOT NULL"]
         "CONSTR_DEFAULT" [:DEFAULT  (stmt->dsql (:raw_expr con) opts)]
-        "CONSTR_UNIQUE" ["unique"]
+        "CONSTR_UNIQUE" ["UNIQUE"]
+        "CONSTR_FOREIGN" (on-foreign con opts)
         :else (throw (Exception. ^String (str "Unimplemented"))))
       (throw (Exception. ^String (str "No constraint type provided"))))))
 
@@ -536,7 +559,7 @@
     (cond->
       {:ql/type :pg/create-extension :name (-> ce-stmt :extname keyword)}
       (:if_not_exists ce-stmt) (assoc :if-not-exists true)
-      (:options ce-stmt) (assoc :schema (-> ce-stmt :options first :DefElem :arg :String :sval)))))
+      (:options ce-stmt) (merge (into {} (map #(stmt->dsql % opts)) (:options ce-stmt))))))
 
 ;; ============================
 ;; CREATE TABLE AS STATEMENTS
@@ -568,7 +591,9 @@
       (:unique idx-stmt) (assoc :unique true)
       (:options idx-stmt) (assoc :schema (-> idx-stmt :options first :DefElem :arg :String :sval))
       (:accessMethod idx-stmt) (assoc :using (-> idx-stmt :accessMethod keyword))
-      (:indexParams idx-stmt) (assoc :expr (into [] (map #(stmt->dsql % opts) (:indexParams idx-stmt))))
+      (:indexParams idx-stmt) (assoc
+                                :expr
+                                (into [] (map #(stmt->dsql % (assoc opts :index-expr? true)) (:indexParams idx-stmt))))
       (:whereClause idx-stmt) (assoc :where
                                      (stmt->dsql
                                        (:whereClause idx-stmt)
@@ -579,7 +604,10 @@
 ;; ============================
 
 (defmethod stmt->dsql :IndexElem [index-stmt & [opts]]
-  (stmt->dsql (-> index-stmt :IndexElem :expr) (assoc opts :not-include-col-name? true)))
+  (if-let [name (-> index-stmt :IndexElem :name)]
+    (keyword name)
+    (stmt->dsql (-> index-stmt :IndexElem :expr) (assoc opts :not-include-col-name? true))))
+
 
 ;; ============================
 ;; DEFAULT HANDLER
