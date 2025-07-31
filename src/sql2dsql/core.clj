@@ -79,6 +79,13 @@
   (let [def-elem (:DefElem x)]
     [(keyword (:defname def-elem)) true]))
 
+(defmethod stmt->dsql :DefElem [x & [_]]
+  (let [elem (:DefElem x) kind (:defname elem)]
+    (cond
+      (= kind "schema") [:schema (-> elem :arg :String :sval)]
+      (= kind "new_version") [:version (-> elem :arg :String :sval)]
+      :else [(keyword kind) true])))
+
 ;; ============================
 ;; SUBLINKS
 ;; ============================
@@ -96,17 +103,22 @@
 (defn handle-target-list [target-list & [opts]]
     (if (only-star? target-list)
       :*
-      (into {} (map-indexed (fn [i x] (stmt->dsql x (assoc opts :column (inc i)))) target-list))))
+      (let [target-results (map-indexed (fn [i x] (stmt->dsql x (assoc opts :column (inc i)))) target-list)]
+        (if (coll? (first target-results))
+          (into {} target-results)
+          (first target-results)))))
 
-(defn select-distinct-on [select-stmt & [opts]]
-  (if (vector? (:distinctClause select-stmt))
-    (let [distinct-on (:distinctClause select-stmt)]
-      (if (empty? (first distinct-on))
-        {:select-distinct (handle-target-list (:targetList select-stmt) opts)}
-        {:select
-         (let [target (handle-target-list (:targetList select-stmt) opts)
-               meta_ {:distinct-on (into [] (map (fn [x] (stmt->dsql x (assoc opts :distinctClause? true))) distinct-on))}]
-           (with-meta target {:pg/projection meta_}))}))
+(defn on-distinct [distinct-on target-list & [opts]]
+  (if (empty? (first distinct-on))
+    {:select-distinct (handle-target-list target-list opts)}
+    {:select
+     (let [target (handle-target-list target-list opts)
+           meta_ {:distinct-on (into [] (map (fn [x] (stmt->dsql x (assoc opts :not-include-col-name? true))) distinct-on))}]
+       (with-meta target {:pg/projection meta_}))}))
+
+(defn select-base [select-stmt & [opts]]
+  (if (:distinctClause select-stmt)
+    (on-distinct (:distinctClause select-stmt) (:targetList select-stmt) opts)
     {:select (handle-target-list (:targetList select-stmt) opts)}))
 
 (defn vl-get-size [lst]
@@ -180,9 +192,9 @@
 
 (defn select-body->dsql [select-stmt opts]
   (cond->
-    (select-distinct-on select-stmt opts)
+    (select-base select-stmt opts)
     (:fromClause select-stmt) (merge (process-from-clause select-stmt opts))
-    (:whereClause select-stmt) (assoc :where (stmt->dsql (:whereClause select-stmt) (assoc opts :where-clause? true)))
+    (:whereClause select-stmt) (assoc :where (stmt->dsql (:whereClause select-stmt) (assoc opts :not-include-col-name? true)))
     (:groupClause select-stmt) (assoc :group-by (process-group-by-clause select-stmt opts))
     (:sortClause select-stmt) (assoc :order-by (process-sort-clause select-stmt opts))
     (:limitCount select-stmt) (assoc :limit (stmt->dsql (:limitCount select-stmt)))))
@@ -237,9 +249,8 @@
 
 (defmethod stmt->dsql :ColumnRef [x & [opts]]
   (cond
-    (or (:where-clause? opts) (:join? opts) (:order-by? opts)
-        (:a-expr? opts) (:distinctClause? opts) (:isFuncArg? opts)
-        (:as-stmt? opts))
+    (or (:not-include-col-name? opts) (:join? opts) (:order-by? opts)
+        (:func-arg? opts) (:as-stmt? opts) (:not-include-col-name? opts))
       (keyword (string/join "." (map #(-> % :String :sval) (:fields (:ColumnRef x)))))
     :else
       (let [column-ref (:ColumnRef x)
@@ -261,7 +272,7 @@
     (-> x :A_Expr :name first :String :sval)))
 
 (defmethod stmt->dsql :A_Expr [x & [opts]]
-  (let [opts (assoc opts :a-expr? true)
+  (let [opts (assoc opts :not-include-col-name? true)
         lexpr (stmt->dsql (-> x :A_Expr :lexpr) opts)
         rexpr  (stmt->dsql (-> x :A_Expr :rexpr) opts)
         opname (get-op-name x)
@@ -299,7 +310,7 @@
     (throw (Exception. ^String (str "No parameter found: " (dec (-> x :ParamRef :number)))))))
 
 ;; ============================
-;; ARRAY CONSTANTS
+;; A_CONSTANTS
 ;; ============================
 
 (defn parse-arr [arr]
@@ -319,14 +330,14 @@
       (:sval aconst) (let [sval (:sval (:sval aconst))]
                        (if-let [[_ arr] (re-matches #"\{(.*)\}" sval)]
                          (parse-arr arr)
-                         (if (or (:isFuncArg? opts) (:val-lists? opts) (:type-cast? opts))
+                         (if (or (:func-arg? opts) (:val-lists? opts) (:type-cast? opts))
                            [:pg/sql (str \' sval \')]
-                           sval)))
+                           (keyword sval))))
       :else
       (throw (Exception. ^String (str "Unsupported A_Const: " aconst))))))
 
 ;; ============================
-;; 5. FUNCTION CALLS
+;; FUNCTION CALLS
 ;; ============================
 
 (defn func-call-on-distinct [func-name args & [opts]]
@@ -351,14 +362,15 @@
 
 (defn func-call-default [x func-name & [opts]]
   (let [args (mapv #(stmt->dsql % opts) (-> x :FuncCall :args))
-        func (into [func-name] args)
+        func (with-meta (into [func-name] args) {:pg/fn true})
         name (if-let [name (:name opts)] (keyword name) func-name)]
-    (if (and (:as-stmt? opts))
-      (with-meta func {:pg/fn true})
-      [name (with-meta func {:pg/fn true})])))
+    (cond
+      (:as-stmt? opts) func
+      (:index-expr? opts) (into [:pg/call] func)
+      :else [name func])))
 
 (defmethod stmt->dsql :FuncCall [x & [opts]]
-  (let [opts (assoc opts :isFuncArg? true)
+  (let [opts (assoc opts :func-arg? true)
         func-name (-> x :FuncCall :funcname first :String :sval keyword)
         args (-> x :FuncCall :args)]
     (cond
@@ -438,6 +450,163 @@
   (let [x (:RangeSubselect x) subquery (:subquery x)]  ;; alias (:alias x) ; develop alias logic
     (assoc (stmt->dsql subquery opts) :alias :to-be-implemented)))
 
+;; ============================
+;; CREATE STATEMENTS
+;; ============================
+
+(defn handle-table-elements [table-elems & [opts]]
+  (let [constraints (filter #(:Constraint %) table-elems)
+        columns (filter #(:ColumnDef %) table-elems)]
+    (cond->
+      {}
+      (not (empty?  constraints)) (assoc :constraint  (into {} (map #(stmt->dsql % opts) constraints)))
+      (not (empty? columns)) (assoc :columns (into {} (map #(stmt->dsql % opts) columns))))))
+
+(def strategy-methods {"PARTITION_STRATEGY_RANGE" :range
+                       "PARTITION_STRATEGY_HASH" :hash})
+
+;; now can only handle range partitioning
+(defn handle-partition [name part-spec part-bound & [opts]]
+  (let [method (get strategy-methods (:strategy part-spec))]
+    {:partition-of name
+     :partition-by {:method method
+                    :expr (-> part-spec :partParams first :PartitionElem :name keyword)}
+     :for (case method
+            :range  {:from (stmt->dsql (-> part-bound :lowerdatums first) opts)
+                     :to (stmt->dsql (-> part-bound :upperdatums first) opts)}
+            :hash {:modulus (:modulus part-bound) })}))
+
+(def rel-persistence {"p" {:permanent true}
+                      "t" {:temporary true}
+                      "u" {:unlogged true}})
+
+(defmethod stmt->dsql :CreateStmt [x & [opts]]
+  (let [create-stmt (:CreateStmt x)
+        rel_persistence (get rel-persistence (-> create-stmt :relation :relpersistence))]
+    (cond->
+      {:ql/type :pg/create-table :table-name (-> create-stmt :relation :relname keyword)}
+      (:if_not_exists create-stmt) (assoc :if-not-exists true)
+      (:unlogged rel_persistence) (assoc :unlogged true)
+      (:temporary rel_persistence) (assoc :temporary true)
+      (:tableElts create-stmt) (merge (handle-table-elements (:tableElts create-stmt) opts))
+      (:partspec create-stmt) (merge (handle-partition
+                                       (-> create-stmt :inhRelations first :RangeVar :relname)
+                                       (:partspec create-stmt)
+                                       (:partbound create-stmt) opts)))))
+
+;; ============================
+;; COLUMN DEFINITION CLAUSE
+;; ============================
+
+(defn handle-int [intgr]
+  (let [val (-> intgr :Integer :ival)]
+    (if (= val -1)
+      "[]"
+      (str "[" val "]"))))
+
+(defn get-col-type [col-type]
+  (let [type (string/join "." (map #(-> % :String :sval) (:names col-type)))
+        array-bounds (:arrayBounds col-type)]
+    (if array-bounds
+      (reduce str type (map handle-int array-bounds))
+      type)))
+
+(defmethod stmt->dsql :ColumnDef [x & [opts]]
+  (let [col (:ColumnDef x)
+        col-name (keyword (:colname col))
+        col-type (get-col-type (:typeName col))
+        col-clause (:collClause col)
+        constraints (map #(stmt->dsql % opts) (:constraints col))]
+    {col-name
+     (if (nil? col-clause)
+       (reduce into [col-type] constraints)
+       [col-type "COLLATE" (-> col-clause :collname first :String :sval)])}))
+
+;; ============================
+;; CONSTRAINTS
+;; ============================
+
+(def actions_ {"c" "CASCADE"
+               "a" false})
+
+(defn on-foreign [con & [_]]
+  (let [args (string/join (map #(-> % :String :sval) (:pk_attrs con)))]
+    (cond->
+      [(str "REFERENCE " (-> con :pktable :relname) "(" args ")")]
+      (get actions_ (:fk_upd_action con)) (conj (str "ON UPDATE " (get actions_ (:fk_upd_action con))))
+      (get actions_ (:fk_del_action con)) (conj (str "ON DELETE " (get actions_ (:fk_del_action con)))))))
+
+(defmethod stmt->dsql :Constraint [con & [opts]]
+  (let [con (:Constraint con)]
+    (if-let [con-type (:contype con)]
+      (case con-type
+        "CONSTR_PRIMARY" (if (:keys con)
+                           {:primary-key (into [] (map #(-> % :String :sval keyword) (:keys con)))}
+                           ["PRIMARY KEY"])
+        "CONSTR_NOTNULL" ["NOT NULL"]
+        "CONSTR_DEFAULT" [:DEFAULT  (stmt->dsql (:raw_expr con) opts)]
+        "CONSTR_UNIQUE" ["UNIQUE"]
+        "CONSTR_FOREIGN" (on-foreign con opts)
+        :else (throw (Exception. ^String (str "Unimplemented"))))
+      (throw (Exception. ^String (str "No constraint type provided"))))))
+
+;; ============================
+;; CREATE EXTENSION STATEMENTS
+;; ============================
+
+(defmethod stmt->dsql :CreateExtensionStmt [x & [opts]]
+  (let [ce-stmt (:CreateExtensionStmt x)]
+    (cond->
+      {:ql/type :pg/create-extension :name (-> ce-stmt :extname keyword)}
+      (:if_not_exists ce-stmt) (assoc :if-not-exists true)
+      (:options ce-stmt) (merge (into {} (map #(stmt->dsql % opts)) (:options ce-stmt))))))
+
+;; ============================
+;; CREATE TABLE AS STATEMENTS
+;; ============================
+
+(defmethod stmt->dsql :CreateTableAsStmt [x & [opts]]
+  (let [create-table-as-stmt (:CreateTableAsStmt x)
+        name (-> create-table-as-stmt :into :rel :relname keyword)
+        rel_persistence (get rel-persistence (-> create-table-as-stmt :relation :relpersistence))]
+    (cond->
+      {:ql/type :pg/create-table-as :table name}
+      (:if_not_exists create-table-as-stmt) (assoc :if-not-exists true)
+      (:unlogged rel_persistence) (assoc :unlogged true)
+      (:query create-table-as-stmt) (assoc :select (merge
+                                                          {:ql/type :pg/select}
+                                                          (stmt->dsql (:query create-table-as-stmt) opts))))))
+
+;; ============================
+;; INDEX STATEMENTS
+;; ============================
+
+(defmethod stmt->dsql :IndexStmt [x & [opts]]
+  (let [idx-stmt (:IndexStmt x)]
+    (cond->
+      {:ql/type :pg/index
+       :index (-> idx-stmt :idxname keyword)
+       :on (-> idx-stmt :relation :relname keyword)}
+      (:if_not_exists idx-stmt) (assoc :if-not-exists true)
+      (:unique idx-stmt) (assoc :unique true)
+      (:options idx-stmt) (assoc :schema (-> idx-stmt :options first :DefElem :arg :String :sval))
+      (:accessMethod idx-stmt) (assoc :using (-> idx-stmt :accessMethod keyword))
+      (:indexParams idx-stmt) (assoc
+                                :expr
+                                (into [] (map #(stmt->dsql % (assoc opts :index-expr? true)) (:indexParams idx-stmt))))
+      (:whereClause idx-stmt) (assoc :where
+                                     (stmt->dsql
+                                       (:whereClause idx-stmt)
+                                       (assoc opts :not-include-col-name? true))))))
+
+;; ============================
+;; INDEX ELEMENT
+;; ============================
+
+(defmethod stmt->dsql :IndexElem [index-stmt & [opts]]
+  (if-let [name (-> index-stmt :IndexElem :name)]
+    (keyword name)
+    (stmt->dsql (-> index-stmt :IndexElem :expr) (assoc opts :not-include-col-name? true))))
 
 
 ;; ============================

@@ -125,8 +125,8 @@
                :from :dft
                :left-join {:d {:table :document
                                :on [:and
-                                    ^:pg/op [:= :dft.id [:jsonb/->> :d.resource "caseNumber"]]
-                                    ^:pg/op [:= [:jsonb/->> :d.resource "name"] [:pg/param "front"]]]}}
+                                    ^:pg/op [:= :dft.id [:jsonb/->> :d.resource :caseNumber]]
+                                    ^:pg/op [:= [:jsonb/->> :d.resource :name] [:pg/param "front"]]]}}
                :where ^:pg/op [:is :d.id nil]})
     )
 
@@ -144,8 +144,8 @@
                :from :dft
                :left-join {:d {:table :document
                                :on [:and
-                                    ^:pg/op [:= :dft.id [:jsonb/->> :d.resource "caseNumber"]]
-                                    ^:pg/op [:= [:jsonb/->> :d.resource "name"] [:pg/param "front"]]]}}
+                                    ^:pg/op [:= :dft.id [:jsonb/->> :d.resource :caseNumber]]
+                                    ^:pg/op [:= [:jsonb/->> :d.resource :name] [:pg/param "front"]]]}}
                :where ^:pg/op [:is :d.id nil]}))
 
   (testing "Complex WHERE clauses"
@@ -405,7 +405,7 @@
               "SELECT * FROM employees WHERE name LIKE 'John%'"
               {:select :*
                :from :employees
-               :where [:like :name "John%"]})
+               :where [:like :name :John%]})
 
     (test-sql 35
               "SELECT CAST(salary AS TEXT) as salary_text FROM employees"
@@ -418,8 +418,246 @@
                         {:ql/type :pg/sub-select,
                          :select {:a :a},
                          :from :employees,
-                         :where [:> :salary 100000]}}}
-              )
-    )
-)
+                         :where [:> :salary 100000]}}})))
 
+(deftest create-table-tests
+  (testing "CREATE TABLE queries"
+    (test-sql 0
+              "CREATE TABLE \"MyTable\" ( \"a\" integer )"
+              {:ql/type :pg/create-table, :table-name :MyTable, :columns {:a ["pg_catalog.int4"]}})
+
+    (test-sql 1
+              "CREATE TABLE projects (project_id INT PRIMARY KEY,\n    start_date DATE,\n    end_date DATE\n)"
+              {:ql/type :pg/create-table
+               :table-name :projects
+               :columns {:project_id ["pg_catalog.int4" "PRIMARY KEY"],
+                         :start_date ["date"],
+                         :end_date ["date"]}})
+
+    (test-sql 2
+              "CREATE TABLE IF NOT EXISTS mytable
+              ( \"id\" text PRIMARY KEY , \"filelds\" jsonb , \"match_tags\" text[] , \"dedup_tags\" text[] )"
+              {:ql/type :pg/create-table
+               :table-name :mytable
+               :if-not-exists true
+               :columns {:id ["text" "PRIMARY KEY"],
+                         :filelds ["jsonb"],
+                         :match_tags ["text[]"],
+                         :dedup_tags ["text[]"]}})
+
+    (test-sql 3
+              "CREATE TABLE IF NOT EXISTS patient_000 partition of patient ( PRIMARY KEY (\"id\", \"partition\"))
+              for values from (0) to (1001) partition by range ( partition )"
+              {:ql/type :pg/create-table,
+               :table-name :patient_000,
+               :constraint {:primary-key [:id :partition]}
+               :if-not-exists true,
+               :partition-of "patient",
+               :partition-by {:method :range,
+                              :expr :partition},
+               :for {:from 0, :to 1001}})
+
+    (test-sql 4
+              "CREATE TABLE mytable ( PRIMARY KEY (\"id\", \"partition\") )"
+              {:ql/type :pg/create-table,
+               :table-name :mytable,
+               :constraint {:primary-key [:id :partition]}})
+
+    (test-sql 5
+              "CREATE TABLE mytable
+              ( \"id\" uuid , \"partition\" int , \"resource\" jsonb , PRIMARY KEY (\"id\", \"partition\") )"
+              {:ql/type :pg/create-table,
+               :table-name :mytable,
+               :constraint {:primary-key [:id :partition]}
+               :columns {:id ["uuid"],
+                         :partition ["pg_catalog.int4"],
+                         :resource ["jsonb"]}})
+
+    (test-sql 6
+              "CREATE TABLE mytable
+              ( \"id\" uuid not null , \"version\" uuid not null ,
+              \"cts\" timestamptz not null DEFAULT current_timestamp ,
+              \"ts\" timestamptz not null DEFAULT current_timestamp ,
+              \"status\" resource_status not null , \"partition\" int not null ,
+              \"resource\" jsonb not null )"
+              {:ql/type :pg/create-table,
+               :table-name :mytable,
+               :columns {:id ["uuid" "NOT NULL"],
+                         :version ["uuid" "NOT NULL"],
+                         :cts ["timestamptz" "NOT NULL" :DEFAULT :CURRENT_TIMESTAMP],
+                         :ts ["timestamptz" "NOT NULL" :DEFAULT :CURRENT_TIMESTAMP],
+                         :status ["resource_status" "NOT NULL"],
+                         :partition ["pg_catalog.int4" "NOT NULL"],
+                         :resource ["jsonb" "NOT NULL"]}})
+
+    (test-sql 7
+              "CREATE UNLOGGED TABLE IF NOT EXISTS mytable
+              ( \"id\" text PRIMARY KEY , \"filelds\" jsonb , \"match_tags\" text[] , \"dedup_tags\" text[] )"
+              {:ql/type :pg/create-table,
+               :table-name :mytable,
+               :if-not-exists true,
+               :unlogged true,
+               :columns {:id ["text" "PRIMARY KEY"],
+                         :filelds ["jsonb"],
+                         :match_tags ["text[]"],
+                         :dedup_tags ["text[]"]}})
+
+    (test-sql 8
+              "CREATE TABLE mytable ( \"a\" integer NOT NULL DEFAULT 8 )"
+              {:ql/type :pg/create-table
+               :table-name :mytable
+               :columns {:a ["pg_catalog.int4" "NOT NULL" :DEFAULT 8]}})
+
+    (test-sql 9
+              "CREATE TABLE IF NOT EXISTS part partition of whole for values from (0) to (400) partition by range ( partition )"
+              {:ql/type :pg/create-table
+               :table-name :part
+               :if-not-exists true
+               :partition-of "whole"
+               :partition-by {:method :range :expr :partition}
+               :for {:from 0 :to 400}})
+
+    (test-sql 10
+              "CREATE EXTENSION jsonknife"
+              {:ql/type :pg/create-extension
+               :name :jsonknife})
+
+    (test-sql 11
+              "CREATE EXTENSION IF NOT EXISTS jsonknife SCHEMA ext"
+              {:ql/type :pg/create-extension
+               :name :jsonknife
+               :schema "ext"
+               :if-not-exists true})
+
+    (test-sql 12
+              "CREATE TABLE table1 AS SELECT 1"
+              {:ql/type :pg/create-table-as
+               :table :table1
+               :select {:ql/type :pg/select
+                        :select 1}})
+    (test-sql 13
+              "CREATE UNIQUE INDEX IF NOT EXISTS sdl_src_dst ON sdl_src_dst ( ( src ) , ( dst ) )"
+              {:ql/type :pg/index
+               :index   :sdl_src_dst
+               :on      :sdl_src_dst
+               :if-not-exists true
+               :unique  true
+               :using :btree,
+               :expr    [:src :dst]})
+
+    (test-sql 14
+              "CREATE INDEX IF NOT EXISTS users_id_idx ON users USING GIN ( ( resource-> 'a' ) , ( resource->'b' ) ) WHERE users.status = $1"
+              ["active"]
+              {:ql/type :pg/index,
+               :index :users_id_idx,
+               :on :users,
+               :if-not-exists true,
+               :using :gin,
+               :expr [[:-> :resource :a] [:-> :resource :b]],
+               :where [:= :users.status [:pg/param "active"]]})))
+
+(deftest create-table-edge-cases
+  (testing "CREATE TABLE edge cases"
+    ;; Test 15: Multiple constraints on single column
+    (test-sql 15
+              "CREATE TABLE users ( id SERIAL PRIMARY KEY UNIQUE NOT NULL )"
+              {:ql/type :pg/create-table
+               :table-name :users
+               :columns {:id ["serial" "PRIMARY KEY" "UNIQUE" "NOT NULL"]}})
+
+    ;; Test 18: Column with custom type and array dimensions
+    (test-sql 16
+              "CREATE TABLE matrix ( data FLOAT8[3][3] )"
+              {:ql/type :pg/create-table
+               :table-name :matrix
+               :columns {:data ["float8[3][3]"]}})
+
+    ;; Test 19: TEMPORARY table
+    (test-sql 17
+              "CREATE TEMPORARY TABLE temp_data ( session_id TEXT )"
+              {:ql/type :pg/create-table
+               :table-name :temp_data
+               :temporary true
+               :columns {:session_id ["text"]}})
+
+    ;; Test 21: Complex DEFAULT with function call
+    (test-sql 18
+              "CREATE TABLE logs ( created_at TIMESTAMPTZ DEFAULT NOW(), id UUID DEFAULT gen_random_uuid() )"
+              {:ql/type :pg/create-table
+               :table-name :logs
+               :columns {:created_at ["timestamptz" :DEFAULT [:now]]
+                         :id ["uuid" :DEFAULT [:gen_random_uuid]]}})
+
+    ;; Test 22: SERIAL and BIGSERIAL types
+    (test-sql 19
+              "CREATE TABLE sequences ( small_id SERIAL, big_id BIGSERIAL )"
+              {:ql/type :pg/create-table
+               :table-name :sequences
+               :columns {:small_id ["serial"]
+                         :big_id ["bigserial"]}})
+
+    ;; Test 24: ENUM type usage
+    (test-sql 20
+              "CREATE TABLE orders ( status order_status DEFAULT 'pending' )"
+              {:ql/type :pg/create-table
+               :table-name :orders
+               :columns {:status ["order_status" :DEFAULT :pending]}})
+
+    ;; Test 27: Column with COLLATE
+    (test-sql 21
+              "CREATE TABLE texts ( content TEXT COLLATE \"en_US.UTF-8\" )"
+              {:ql/type :pg/create-table
+               :table-name :texts
+               :columns {:content ["text" "COLLATE" "en_US.UTF-8"]}})))
+
+
+(deftest create-index-edge-cases
+  (testing "CREATE INDEX edge cases"
+
+    ;; Test 31: Partial index with complex WHERE clause
+    (test-sql 22
+              "CREATE INDEX active_users_idx ON users (last_login) WHERE status = 'active' AND last_login > '2023-01-01'"
+              {:ql/type :pg/index
+               :index :active_users_idx
+               :on :users
+               :using :btree
+               :expr [:last_login]
+               :where [:and
+                       [:= :status :active]
+                       [:> :last_login :2023-01-01]]})
+
+    ;; Test 32: Expression index with function
+    (test-sql 23
+              "CREATE INDEX lower_email_idx ON users (LOWER(email))"
+              {:ql/type :pg/index
+               :index :lower_email_idx
+               :on :users
+               :using :btree
+               :expr [[:pg/call :lower :email]]})
+
+    ;; Test 36: GiST index for geometric data
+    (test-sql 24
+              "CREATE INDEX spatial_idx ON locations USING GIST (coordinates)"
+              {:ql/type :pg/index
+               :index :spatial_idx
+               :on :locations
+               :using :gist
+               :expr [:coordinates]})))
+
+(deftest create-extension-edge-cases
+  (testing "CREATE EXTENSION edge cases"
+
+    ;; Test 38: Extension with version
+    (test-sql 25
+              "CREATE EXTENSION postgis VERSION '3.1.0'"
+              {:ql/type :pg/create-extension
+               :name :postgis
+               :version "3.1.0"})
+
+    ;; Test 40: Extension with CASCADE
+    (test-sql 26
+              "CREATE EXTENSION IF NOT EXISTS postgis CASCADE"
+              {:ql/type :pg/create-extension
+               :name :postgis
+               :if-not-exists true
+               :cascade true})))
