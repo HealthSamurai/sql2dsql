@@ -104,9 +104,11 @@
     (if (only-star? target-list)
       :*
       (let [target-results (map-indexed (fn [i x] (stmt->dsql x (assoc opts :column (inc i)))) target-list)]
-        (if (coll? (first target-results))
-          (into {} target-results)
-          (first target-results)))))
+        (cond
+          (not (coll? (first target-results))) (first target-results)
+          (= 1 (count (vec (first target-results)))) [(first(first target-results))]
+          (meta (first target-results)) (vec (first target-results))
+          :else (into {} target-results)))))
 
 (defn on-distinct [distinct-on target-list & [opts]]
   (if (empty? (first distinct-on))
@@ -199,12 +201,15 @@
     (:sortClause select-stmt) (assoc :order-by (process-sort-clause select-stmt opts))
     (:limitCount select-stmt) (assoc :limit (stmt->dsql (:limitCount select-stmt)))))
 
+(defn get-with-map [stmt & [opts]]
+  (into {}
+        (map (fn [cte]
+               [(keyword (:ctename (:CommonTableExpr cte)))
+                (stmt->dsql (:ctequery (:CommonTableExpr cte)) opts)])
+             (get-in stmt [:withClause :ctes]))))
+
 (defn process-with-clause [select-stmt & [opts]]
-  (let [with-map (into {}
-                       (map (fn [cte]
-                              [(keyword (:ctename (:CommonTableExpr cte)))
-                               (stmt->dsql (:ctequery (:CommonTableExpr cte)) opts)])
-                            (get-in select-stmt [:withClause :ctes])))
+  (let [with-map (get-with-map select-stmt opts)
         select-body (select-body->dsql select-stmt opts)]
     {:ql/type :pg/cte
      :with with-map
@@ -228,7 +233,9 @@
         val (:val res-target)]
     (if (nil? name)
       (stmt->dsql val opts)
-      [(keyword name) (stmt->dsql val (assoc opts :as-stmt? true))])))
+      (if (nil? val)
+        (keyword name)
+        [(keyword name) (stmt->dsql val (assoc opts :as-stmt? true))]))))
 
 ;; ============================
 ;; COLUMN REFERENCES
@@ -249,6 +256,7 @@
 
 (defmethod stmt->dsql :ColumnRef [x & [opts]]
   (cond
+    (-> x :ColumnRef :fields first :A_Star) :*
     (or (:not-include-col-name? opts) (:join? opts) (:order-by? opts)
         (:func-arg? opts) (:as-stmt? opts) (:not-include-col-name? opts))
       (keyword (string/join "." (map #(-> % :String :sval) (:fields (:ColumnRef x)))))
@@ -324,7 +332,8 @@
 (defmethod stmt->dsql :A_Const [x & [opts]]
   (let [aconst (:A_Const x)]
     (cond
-      (:boolval aconst) (:boolval (:boolval aconst))
+      (:boolval aconst) (true? (:boolval (:boolval aconst)))
+      (:isnull aconst) nil
       (:ival aconst) (if-let [r (-> aconst :ival :ival)] r 0)
       (:fval aconst) (:fval (:fval aconst))
       (:sval aconst) (let [sval (:sval (:sval aconst))]
@@ -362,12 +371,11 @@
 
 (defn func-call-default [x func-name & [opts]]
   (let [args (mapv #(stmt->dsql % opts) (-> x :FuncCall :args))
-        func (with-meta (into [func-name] args) {:pg/fn true})
-        name (if-let [name (:name opts)] (keyword name) func-name)]
+        func (with-meta (into [func-name] args) {:pg/fn true})]
     (cond
-      (:as-stmt? opts) func
       (:index-expr? opts) (into [:pg/call] func)
-      :else [name func])))
+      (:name opts) [name func]
+      :else func)))
 
 (defmethod stmt->dsql :FuncCall [x & [opts]]
   (let [opts (assoc opts :func-arg? true)
@@ -608,6 +616,103 @@
     (keyword name)
     (stmt->dsql (-> index-stmt :IndexElem :expr) (assoc opts :not-include-col-name? true))))
 
+;; ============================
+;; A_ARRAY EXPRESSIONS
+;; ============================
+
+(defmethod stmt->dsql :A_ArrayExpr [x & [opts]]
+  [:pg/array (into [] (map #(stmt->dsql % opts) (-> x :A_ArrayExpr :elements)))])
+
+;; ============================
+;; INSERT STATEMENT
+;; ============================
+
+(defn handle-one-list [list & [opts]]
+  (map #(stmt->dsql % opts) (-> list :List :items)))
+
+(defn handle-insert-many-values [cols values-lists & [opts]]
+  (let [keys (mapv #(stmt->dsql % opts) cols)
+        value-lists (map #(handle-one-list % (assoc opts :as-stmt? true)) values-lists)
+        paired-lists (mapv #(zipmap keys %) value-lists)]
+    {:keys keys
+     :values paired-lists}))
+
+(defn handle-returning [returning-list & [opts]]
+  (let [evaluated-list (map #(stmt->dsql % (assoc opts :not-include-col-name? true :as-stmt? true)) returning-list)]
+    (if (-> returning-list first :ResTarget :name)
+      [:as (last (first evaluated-list)) (first (first evaluated-list))]
+      (if (meta (first evaluated-list))
+        (first evaluated-list)
+        (into [:pg/columns] evaluated-list)))))
+
+(defn insert-base [name type]
+  {:ql/type type
+   :into name})
+
+(defn get-insert-type [val-list]
+  (if val-list
+    (if (= 1 (count val-list))
+      :pg/insert
+      :pg/insert-many)
+    :pg/insert-select))
+
+(defn handle-conflict [on-conflict & [opts]]
+  {:on (into [] (map #(stmt->dsql % opts) (-> on-conflict :infer :indexElems)))
+   :do
+   (case (:action on-conflict)
+   "ONCONFLICT_UPDATE" (cond->
+                         {:set (into {} (map #(stmt->dsql % opts) (:targetList on-conflict)))}
+                         (:whereClause on-conflict) (assoc
+                                                      :where
+                                                      (stmt->dsql
+                                                        (:whereClause on-conflict)
+                                                        (assoc opts :not-include-col-name? true))))
+   :nothing)})
+
+(defn get-name [relation]
+  (keyword
+    (if (:schemaname relation)
+      (str (:schemaname relation) "." (:relname relation))
+      (:relname relation))))
+
+(defmethod stmt->dsql :InsertStmt [x & [opts]]
+  (let [stmt (:InsertStmt x)
+        cols (:cols stmt)
+        val-list (-> stmt :selectStmt :SelectStmt :valuesLists)
+        type (get-insert-type val-list)]
+    (cond->
+      (insert-base (get-name (:relation stmt)) type)
+      (-> stmt :relation :alias) (assoc :as (-> stmt :relation :alias :aliasname keyword))
+      (= type :pg/insert) (assoc :value (-> (handle-insert-many-values cols val-list opts) :values first))
+      (= type :pg/insert-many) (assoc :values (handle-insert-many-values cols val-list opts))
+      (= type :pg/insert-select) (assoc :select (stmt->dsql (:selectStmt stmt) opts))
+      (:onConflictClause stmt) (assoc :on-conflict (handle-conflict (:onConflictClause stmt) opts))
+      (:returningList stmt) (assoc :returning (handle-returning (:returningList stmt) opts)))))
+
+;; ============================
+;; CASE EXPRESSION
+;; ============================
+
+(defmethod stmt->dsql :CaseExpr [x & [opts]]
+  (let [stmt (:CaseExpr x)]
+    (into [:cond]
+           (conj (reduce conj (map #(stmt->dsql % opts) (:args stmt))) (stmt->dsql (:defresult stmt) opts)))))
+
+;; ============================
+;; CASE WHEN EXPRESSION
+;; ============================
+
+(defmethod stmt->dsql :CaseWhen [x & [opts]]
+  (conj
+    [(stmt->dsql (-> x :CaseWhen :expr) (assoc opts :not-include-col-name? true))]
+    (stmt->dsql (-> x :CaseWhen :result) opts)))
+
+;; ============================
+;; SET TO DEFAULT
+;; ============================
+
+(defmethod stmt->dsql :SetToDefault [_ & [_]]
+  :DEFAULT)
 
 ;; ============================
 ;; DEFAULT HANDLER

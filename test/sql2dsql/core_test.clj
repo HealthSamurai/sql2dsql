@@ -333,17 +333,18 @@
                )
                SELECT * FROM high_earners"
               {:ql/type :pg/cte
-               :with {:dept_avg {:select {:dept_id :department_id
-                                          :avg_sal ^:pg/fn [:avg :salary]}
-                                 :from :employee
-                                 :group-by {:department_id :department_id}}
+               :with {:dept_avg
+                      {:select
+                       {:dept_id :department_id
+                        :avg_sal ^:pg/fn [:avg :salary]}
+                       :from :employee
+                       :group-by {:department_id :department_id}}
                       :high_earners {:select :*
                                      :from :employee
-                                     :where [:> :salary
-                                             {:ql/type :pg/sub-select
-                                              :select {:avg ^:pg/fn [:avg :salary]}
-                                              :from :dept_avg
-                                              :where [:= :dept_avg.dept_id :employee.department_id]}]}}
+                                     :where [:> :salary {:ql/type :pg/sub-select
+                                                         :select ^:pg/fn [:avg :salary]
+                                                         :from :dept_avg
+                                                         :where [:= :dept_avg.dept_id :employee.department_id]}]}}
                :select {:select :*
                         :from :high_earners}}))
 
@@ -661,3 +662,461 @@
                :name :postgis
                :if-not-exists true
                :cascade true})))
+
+(deftest insert-tests
+  (testing "Basic INSERT queries"
+
+    (test-sql 1
+              "INSERT INTO patient (id, gender) VALUES ('id-123', 'male')"
+              {:ql/type :pg/insert
+               :into :patient
+               :value {:id :id-123
+                       :gender :male}})
+
+    (test-sql 2
+              "INSERT INTO patient (id, gender) VALUES ($1, $2)"
+              ["id-123" "male"]
+              {:ql/type :pg/insert
+               :into :patient
+               :value {:id [:pg/param "id-123"]
+                       :gender [:pg/param "male"]}})
+
+    (test-sql 3
+              "INSERT INTO patient AS p (id, gender) VALUES ($1, $2)"
+              ["id-123" "male"]
+              {:ql/type :pg/insert
+               :into :patient
+               :as :p
+               :value {:id [:pg/param "id-123"]
+                       :gender [:pg/param "male"]}})
+
+    (test-sql 4
+              "INSERT INTO patient (id, gender) VALUES ($1, $2) RETURNING *"
+              ["id-123" "male"]
+              {:ql/type :pg/insert
+               :into :patient
+               :value {:id [:pg/param "id-123"]
+                       :gender [:pg/param "male"]}
+               :returning [:pg/columns :*]})
+
+    (test-sql 5
+              "INSERT INTO patient AS p (id, gender) VALUES ($1, $2) RETURNING id, gender"
+              ["id-123" "male"]
+              {:ql/type :pg/insert
+               :into :patient
+               :as :p
+               :value {:id [:pg/param "id-123"]
+                       :gender [:pg/param "male"]}
+               :returning [:pg/columns :id :gender]})
+
+    (test-sql 6.1
+              "INSERT INTO patient AS p (id, gender)
+              VALUES ($1, $2) RETURNING jsonb_strip_nulls(CAST(row_to_json(p.*) AS jsonb)) AS row"
+              ["id-123" "male"]
+              {:ql/type :pg/insert
+               :into :patient
+               :as :p
+               :value {:id [:pg/param "id-123"]
+                       :gender [:pg/param "male"]}
+               :returning [:as ^:pg/fn [:jsonb_strip_nulls [:pg/cast ^:pg/fn[:row_to_json :p.] :jsonb]] :row]})
+
+    (test-sql 6.2
+              "INSERT INTO patient AS p ( \"id\", \"gender\" ) VALUES ( $1 , $2 ) RETURNING jsonb_strip_nulls( ( row_to_json( p.* ) )::jsonb )"
+              ["id" "male"]
+              {:ql/type :pg/insert
+               :into :patient
+               :as :p
+               :value {:id [:pg/param "id"]
+                       :gender [:pg/param "male"]}
+               :returning ^:pg/fn [:jsonb_strip_nulls [:pg/cast ^:pg/fn [:row_to_json :p.] :jsonb]]})
+
+    (test-sql 7
+              "INSERT INTO healthplan (a, b, c) VALUES (1, 'x', $1) RETURNING *"
+              ["str"]
+              {:ql/type :pg/insert
+               :into :healthplan
+               :value {:a 1
+                       :b :x
+                       :c [:pg/param "str"]}
+               :returning [:pg/columns :*]})
+
+    (test-sql 8
+              "INSERT INTO healthplan (a, b, c, birthDate) VALUES (1, 'x', $1, $2) RETURNING *"
+              ["str" "1991-11-08"]
+              {:ql/type :pg/insert
+               :into :healthplan
+               :value {:a 1, :b :x, :c [:pg/param "str"], :birthdate [:pg/param "1991-11-08"]}
+               :returning [:pg/columns :*]}))
+
+
+  (testing "INSERT with ON CONFLICT"
+
+    (test-sql 9
+              "INSERT INTO healthplan (a, b, c)
+              VALUES (1, 'x', $1) ON CONFLICT (id) DO UPDATE SET a = excluded.a WHERE 1 = 2 RETURNING *"
+              ["str"]
+              {:ql/type :pg/insert
+               :into :healthplan
+               :value {:a 1
+                       :b :x
+                       :c [:pg/param "str"]}
+               :on-conflict {:on [:id]
+                             :do {:set {:a :excluded.a}
+                                  :where [:= 1 2]}}
+               :returning [:pg/columns :*]})
+
+    (test-sql 10
+              "INSERT INTO mytable (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING"
+              ["123" "test"]
+              {:ql/type :pg/insert
+               :into :mytable
+               :value {:id [:pg/param "123"]
+                       :name [:pg/param "test"]}
+               :on-conflict {:on [:id]
+                             :do :nothing}}))
+
+  (testing "INSERT SELECT queries"
+
+    (test-sql 11
+              "INSERT INTO mytable SELECT * FROM t"
+              {:ql/type :pg/insert-select
+               :into :mytable
+               :select {:select :*
+                        :from :t}})
+
+    (test-sql 12
+              "INSERT INTO mytable (a, b, z) SELECT 'a' AS a, b AS b, z AS z FROM t"
+              {:ql/type :pg/insert-select
+               :into :mytable
+               :select {:select {:a :a
+                                 :b :b
+                                 :z :z}
+                        :from :t}})
+
+    (test-sql 13
+              "INSERT INTO mytable (a, b, z) SELECT $1 AS a, b AS b, z AS z FROM t"
+              ["a"]
+              {:ql/type :pg/insert-select
+               :into :mytable
+               :select {:select {:a [:pg/param "a"]
+                                 :b :b
+                                 :z :z}
+                        :from :t}})
+
+    (test-sql 14
+              "INSERT INTO mytable (a, b, z)
+              SELECT $1 AS a, b AS b, z AS z FROM t ON CONFLICT (id) DO UPDATE SET a = excluded.a WHERE 1 = 2"
+              ["a"]
+              {:ql/type :pg/insert-select
+               :into :mytable
+               :select {:select {:a [:pg/param "a"]
+                                 :b :b
+                                 :z :z}
+                        :from :t}
+               :on-conflict {:on [:id]
+                             :do {:set {:a :excluded.a}
+                                  :where [:= 1 2]}}})
+
+    (test-sql 15
+              "INSERT INTO mytable (a, b, z) SELECT $1 AS a, b AS b, z AS z FROM t ON CONFLICT (id) DO NOTHING"
+              ["a"]
+              {:ql/type :pg/insert-select
+               :into :mytable
+               :select {:select {:a [:pg/param "a"]
+                                 :b :b
+                                 :z :z}
+                        :from :t}
+               :on-conflict {:on [:id]
+                             :do :nothing}})
+
+    (test-sql 16
+              "INSERT INTO mytable (a, b, z) SELECT $1 AS a, b AS b, z AS z FROM t RETURNING *"
+              ["a"]
+              {:ql/type :pg/insert-select
+               :into :mytable
+               :select {:select {:a [:pg/param "a"]
+                                 :b :b
+                                 :z :z}
+                        :from :t}
+               :returning [:pg/columns :*]}))
+
+  (testing "INSERT with multiple values"
+
+    (test-sql 17
+              "INSERT INTO conceptmaprule (id, txid, resource, status) VALUES (1, NULL, $1, $2), (2, NULL, NULL, $3) RETURNING *"
+              ["1" "ready" "failure"]
+              {:ql/type :pg/insert-many
+               :into :conceptmaprule
+               :values {:keys [:id :txid :resource :status]
+                        :values [{:id 1
+                                  :txid nil
+                                  :resource [:pg/param "1"]
+                                  :status [:pg/param "ready"]}
+                                 {:id 2
+                                  :txid nil
+                                  :resource nil
+                                  :status [:pg/param "failure"]}]}
+               :returning [:pg/columns :*]})
+
+    (test-sql 18
+              "INSERT INTO users (id, name, active) VALUES (1, 'Alice', true), (2, 'Bob', false)"
+              {:ql/type :pg/insert-many
+               :into :users
+               :values {:keys [:id :name :active]
+                        :values [{:id 1
+                                  :name :Alice
+                                  :active true}
+                                 {:id 2
+                                  :name :Bob
+                                  :active false}]}}))
+
+  (testing "Complex INSERT queries"
+
+    (test-sql 19
+              "INSERT INTO patient (id, resource) VALUES ($1, jsonb_build_object('name', $2, 'gender', $3))"
+              ["id-123" "John Doe" "male"]
+              {:ql/type :pg/insert
+               :into :patient
+               :value {:id [:pg/param "id-123"]
+                       :resource ^:pg/fn[:jsonb_build_object
+                                         [:pg/sql "'name'"]
+                                         [:pg/param "John Doe"]
+                                         [:pg/sql "'gender'"]
+                                         [:pg/param "male"]]}})
+
+    (test-sql 20
+              "INSERT INTO logs (id, created_at) VALUES (gen_random_uuid(), NOW())"
+              {:ql/type :pg/insert
+               :into :logs
+               :value {:id [:gen_random_uuid]
+                       :created_at [:now]}})
+
+    (test-sql 21
+              "INSERT INTO healthplan (id, resource) VALUES ($1, resource || jsonb_build_object('status', $2))"
+              ["hp-1" "active"]
+              {:ql/type :pg/insert
+               :into :healthplan
+               :value {:id [:pg/param "hp-1"]
+                       :resource [:|| :resource ^:pg/fn[:jsonb_build_object
+                                                        [:pg/sql "'status'"]
+                                                        [:pg/param "active"]]]}})
+
+    (test-sql 22
+              "INSERT INTO \"MyTable\" (\"id\", \"name\") VALUES ($1, $2)"
+              ["123" "test"]
+              {:ql/type :pg/insert
+               :into :MyTable
+               :value {:id [:pg/param "123"]
+                       :name [:pg/param "test"]}})
+
+    (test-sql 23
+              "INSERT INTO patient (id, metadata) VALUES ($1, $2::jsonb)"
+              ["p-1" "{\"foo\":\"bar\"}"]
+              {:ql/type :pg/insert
+               :into :patient
+               :value {:id [:pg/param "p-1"]
+                       :metadata [:pg/cast [:pg/param "{\"foo\":\"bar\"}"] :jsonb]}})))
+
+(deftest insert-edge-case-tests
+  (testing "INSERT edge cases"
+
+    ;; Test 61: INSERT with DEFAULT values
+    (test-sql 61
+              "INSERT INTO users (id, name, created_at) VALUES ($1, $2, DEFAULT)"
+              ["123" "Alice"]
+              {:ql/type :pg/insert
+               :into :users
+               :value {:id [:pg/param "123"]
+                       :name [:pg/param "Alice"]
+                       :created_at :DEFAULT}})
+
+    ;; Test 62: INSERT with multiple DEFAULT values
+    (test-sql 62
+              "INSERT INTO logs (id, created_at, updated_at) VALUES (DEFAULT, DEFAULT, DEFAULT)"
+              {:ql/type :pg/insert
+               :into :logs
+               :value {:id :DEFAULT
+                       :created_at :DEFAULT
+                       :updated_at :DEFAULT}})
+
+    ;; Test 63: INSERT with CURRENT_TIMESTAMP
+    (test-sql 63
+              "INSERT INTO events (id, name, event_time) VALUES ($1, $2, CURRENT_TIMESTAMP)"
+              ["evt-1" "Login"]
+              {:ql/type :pg/insert
+               :into :events
+               :value {:id [:pg/param "evt-1"]
+                       :name [:pg/param "Login"]
+                       :event_time :CURRENT_TIMESTAMP}})
+
+    ;; Test 64: INSERT with CURRENT_DATE and CURRENT_TIME
+    (test-sql 64
+              "INSERT INTO schedules (id, schedule_date, schedule_time) VALUES ($1, CURRENT_DATE, CURRENT_TIME)"
+              ["sch-1"]
+              {:ql/type :pg/insert
+               :into :schedules
+               :value {:id [:pg/param "sch-1"]
+                       :schedule_date :CURRENT_DATE
+                       :schedule_time :CURRENT_TIME}})
+
+    ;; Test 65: INSERT with NULL values
+    (test-sql 65
+              "INSERT INTO patients (id, name, middle_name, deceased_date) VALUES ($1, $2, NULL, NULL)"
+              ["p-1" "John Doe"]
+              {:ql/type :pg/insert
+               :into :patients
+               :value {:id [:pg/param "p-1"]
+                       :name [:pg/param "John Doe"]
+                       :middle_name nil
+                       :deceased_date nil}})
+
+    ;; Test 66: INSERT with array literals
+    (test-sql 66
+              "INSERT INTO tags_table (id, tags) VALUES ($1, ARRAY['tag1', 'tag2', 'tag3'])"
+              ["123"]
+              {:ql/type :pg/insert
+               :into :tags_table
+               :value {:id [:pg/param "123"]
+                       :tags [:pg/array [:tag1 :tag2 :tag3]]}})
+
+    ;; Test 68: INSERT with complex JSONB operations
+    (test-sql 68
+              "INSERT INTO documents (id, data) VALUES ($1, jsonb_build_object('items', jsonb_build_array($2, $3, $4)))"
+              ["doc-1" "item1" "item2" "item3"]
+              {:ql/type :pg/insert
+               :into :documents
+               :value {:id [:pg/param "doc-1"]
+                       :data ^:pg/fn[:jsonb_build_object
+                                     [:pg/sql "'items'"]
+                                     ^:pg/fn[:jsonb_build_array
+                                             [:pg/param "item1"]
+                                             [:pg/param "item2"]
+                                             [:pg/param "item3"]]]}})
+
+    ;; Test 69: INSERT with nested subquery in value
+    (test-sql 69
+              "INSERT INTO summary (id, total_count) VALUES ($1, (SELECT COUNT(*) FROM users WHERE active = true))"
+              ["sum-1"]
+              {:ql/type :pg/insert
+               :into :summary
+               :value {:id [:pg/param "sum-1"]
+                       :total_count {:ql/type :pg/sub-select
+                                     :select [:pg/count*]
+                                     :from :users
+                                     :where [:= :active true]}}})
+
+    ;; Test 70: INSERT with ON CONFLICT on multiple columns
+    (test-sql 70
+              "INSERT INTO user_roles (user_id, role_id, assigned_at) VALUES ($1, $2, $3) ON CONFLICT (user_id, role_id) DO UPDATE SET assigned_at = EXCLUDED.assigned_at"
+              ["u-1" "r-1" "2023-01-01"]
+              {:ql/type :pg/insert
+               :into :user_roles
+               :value {:user_id [:pg/param "u-1"]
+                       :role_id [:pg/param "r-1"]
+                       :assigned_at [:pg/param "2023-01-01"]}
+               :on-conflict {:on [:user_id :role_id]
+                             :do {:set {:assigned_at :excluded.assigned_at}}}})
+
+    ;; Test 73: INSERT with quoted column names
+    (test-sql 73
+              "INSERT INTO \"user\" (\"id\", \"from\", \"to\", \"select\") VALUES ($1, $2, $3, $4)"
+              ["123" "NYC" "LA" "first"]
+              {:ql/type :pg/insert
+               :into :user
+               :value {:id [:pg/param "123"]
+                       :from [:pg/param "NYC"]
+                       :to [:pg/param "LA"]
+                       :select [:pg/param "first"]}})
+
+    ;; Test 74: INSERT with schema-qualified table
+    (test-sql 74
+              "INSERT INTO public.users (id, name) VALUES ($1, $2)"
+              ["u-1" "Alice"]
+              {:ql/type :pg/insert
+               :into :public.users
+               :value {:id [:pg/param "u-1"]
+                       :name [:pg/param "Alice"]}})
+
+    ;; Test 76: INSERT with interval type
+    (test-sql 76
+              "INSERT INTO schedules (id, name, duration) VALUES ($1, $2, INTERVAL '1 hour 30 minutes')"
+              ["sch-1" "Meeting"]
+              {:ql/type :pg/insert
+               :into :schedules
+               :value {:id [:pg/param "sch-1"]
+                       :name [:pg/param "Meeting"]
+                       :duration [:pg/cast [:pg/sql "'1 hour 30 minutes'"] :pg_catalog.interval]}})
+
+    ;; Test 77: INSERT with boolean expressions
+    (test-sql 77
+              "INSERT INTO feature_flags (id, name, enabled) VALUES ($1, $2, $3 = 'true')"
+              ["ff-1" "new_ui" "true"]
+              {:ql/type :pg/insert
+               :into :feature_flags
+               :value {:id [:pg/param "ff-1"]
+                       :name [:pg/param "new_ui"]
+                       :enabled [:= [:pg/param "true"] :true]}})
+
+    ;; Test 78: INSERT with CASE expression
+    (test-sql 78
+              "INSERT INTO users (id, name, status) VALUES ($1, $2, CASE WHEN $3 > 18 THEN 'adult' ELSE 'minor' END)"
+              ["u-1" "John" 25]
+              {:ql/type :pg/insert
+               :into :users
+               :value {:id [:pg/param "u-1"]
+                       :name [:pg/param "John"]
+                       :status [:cond
+                                [:> [:pg/param 25] 18] :adult
+                                :minor]}})
+
+    ;; Test 81: INSERT with computed column using other columns
+    (test-sql 81
+              "INSERT INTO products (id, price, tax, total) VALUES ($1, $2, $3, $2 * (1 + $3))"
+              ["prod-1" 100 0.1]
+              {:ql/type :pg/insert
+               :into :products
+               :value {:id [:pg/param "prod-1"]
+                       :price [:pg/param 100]
+                       :tax [:pg/param 0.1]
+                       :total [:* [:pg/param 100] [:+ 1 [:pg/param 0.1]]]}})
+
+    ;; Test 82: INSERT with uuid generation
+    (test-sql 82
+              "INSERT INTO sessions (id, user_id, token) VALUES (uuid_generate_v4(), $1, encode(gen_random_bytes(32), 'hex'))"
+              ["user-123"]
+              {:ql/type :pg/insert
+               :into :sessions
+               :value {:id ^:pg/fn [:uuid_generate_v4]
+                       :user_id [:pg/param "user-123"]
+                       :token ^:pg/fn [:encode ^:pg/fn [:gen_random_bytes 32] [:pg/sql "'hex'"]]}})
+
+    ;; Test 83: INSERT with ON CONFLICT with WHERE clause in DO UPDATE
+    (test-sql 83
+              "INSERT INTO inventory (product_id, quantity, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (product_id) DO UPDATE SET quantity = inventory.quantity + EXCLUDED.quantity, updated_at = NOW() WHERE inventory.quantity + EXCLUDED.quantity > 0"
+              ["prod-1" 5]
+              {:ql/type :pg/insert
+               :into :inventory
+               :value {:product_id [:pg/param "prod-1"]
+                       :quantity [:pg/param 5]
+                       :updated_at [:now]}
+               :on-conflict {:on [:product_id]
+                             :do {:set {:quantity [:+ :inventory.quantity :excluded.quantity]
+                                        :updated_at [:now]}
+                                  :where [:> [:+ :inventory.quantity :excluded.quantity] 0]}}})
+
+    ;; Test 85: INSERT with very long column list
+    (test-sql 85
+              "INSERT INTO big_table (col1, col2, col3, col4, col5, col6, col7, col8, col9, col10) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
+              ["v1" "v2" "v3" "v4" "v5" "v6" "v7" "v8" "v9" "v10"]
+              {:ql/type :pg/insert
+               :into :big_table
+               :value {:col1 [:pg/param "v1"]
+                       :col2 [:pg/param "v2"]
+                       :col3 [:pg/param "v3"]
+                       :col4 [:pg/param "v4"]
+                       :col5 [:pg/param "v5"]
+                       :col6 [:pg/param "v6"]
+                       :col7 [:pg/param "v7"]
+                       :col8 [:pg/param "v8"]
+                       :col9 [:pg/param "v9"]
+                       :col10 [:pg/param "v10"]}})))
