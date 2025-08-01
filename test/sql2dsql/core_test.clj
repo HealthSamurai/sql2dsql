@@ -415,11 +415,10 @@
 
     (test-sql 36
               "SELECT EXISTS(SELECT a as a FROM employees WHERE salary > 100000) as has_high_earners"
-              {:select {:has_high_earners
-                        {:ql/type :pg/sub-select,
-                         :select {:a :a},
-                         :from :employees,
-                         :where [:> :salary 100000]}}})))
+              {:select {:has_high_earners [:exists {:ql/type :pg/sub-select
+                                                    :select {:a :a}
+                                                    :from :employees
+                                                    :where [:> :salary 100000]}]}})))
 
 (deftest create-table-tests
   (testing "CREATE TABLE queries"
@@ -920,8 +919,7 @@
 (deftest insert-edge-case-tests
   (testing "INSERT edge cases"
 
-    ;; Test 61: INSERT with DEFAULT values
-    (test-sql 61
+    (test-sql 24
               "INSERT INTO users (id, name, created_at) VALUES ($1, $2, DEFAULT)"
               ["123" "Alice"]
               {:ql/type :pg/insert
@@ -930,8 +928,7 @@
                        :name [:pg/param "Alice"]
                        :created_at :DEFAULT}})
 
-    ;; Test 62: INSERT with multiple DEFAULT values
-    (test-sql 62
+    (test-sql 25
               "INSERT INTO logs (id, created_at, updated_at) VALUES (DEFAULT, DEFAULT, DEFAULT)"
               {:ql/type :pg/insert
                :into :logs
@@ -939,8 +936,7 @@
                        :created_at :DEFAULT
                        :updated_at :DEFAULT}})
 
-    ;; Test 63: INSERT with CURRENT_TIMESTAMP
-    (test-sql 63
+    (test-sql 26
               "INSERT INTO events (id, name, event_time) VALUES ($1, $2, CURRENT_TIMESTAMP)"
               ["evt-1" "Login"]
               {:ql/type :pg/insert
@@ -949,8 +945,7 @@
                        :name [:pg/param "Login"]
                        :event_time :CURRENT_TIMESTAMP}})
 
-    ;; Test 64: INSERT with CURRENT_DATE and CURRENT_TIME
-    (test-sql 64
+    (test-sql 27
               "INSERT INTO schedules (id, schedule_date, schedule_time) VALUES ($1, CURRENT_DATE, CURRENT_TIME)"
               ["sch-1"]
               {:ql/type :pg/insert
@@ -959,8 +954,7 @@
                        :schedule_date :CURRENT_DATE
                        :schedule_time :CURRENT_TIME}})
 
-    ;; Test 65: INSERT with NULL values
-    (test-sql 65
+    (test-sql 28
               "INSERT INTO patients (id, name, middle_name, deceased_date) VALUES ($1, $2, NULL, NULL)"
               ["p-1" "John Doe"]
               {:ql/type :pg/insert
@@ -970,8 +964,7 @@
                        :middle_name nil
                        :deceased_date nil}})
 
-    ;; Test 66: INSERT with array literals
-    (test-sql 66
+    (test-sql 29
               "INSERT INTO tags_table (id, tags) VALUES ($1, ARRAY['tag1', 'tag2', 'tag3'])"
               ["123"]
               {:ql/type :pg/insert
@@ -979,8 +972,7 @@
                :value {:id [:pg/param "123"]
                        :tags [:pg/array [:tag1 :tag2 :tag3]]}})
 
-    ;; Test 68: INSERT with complex JSONB operations
-    (test-sql 68
+    (test-sql 30
               "INSERT INTO documents (id, data) VALUES ($1, jsonb_build_object('items', jsonb_build_array($2, $3, $4)))"
               ["doc-1" "item1" "item2" "item3"]
               {:ql/type :pg/insert
@@ -993,8 +985,7 @@
                                              [:pg/param "item2"]
                                              [:pg/param "item3"]]]}})
 
-    ;; Test 69: INSERT with nested subquery in value
-    (test-sql 69
+    (test-sql 31
               "INSERT INTO summary (id, total_count) VALUES ($1, (SELECT COUNT(*) FROM users WHERE active = true))"
               ["sum-1"]
               {:ql/type :pg/insert
@@ -1005,8 +996,7 @@
                                      :from :users
                                      :where [:= :active true]}}})
 
-    ;; Test 70: INSERT with ON CONFLICT on multiple columns
-    (test-sql 70
+    (test-sql 32
               "INSERT INTO user_roles (user_id, role_id, assigned_at) VALUES ($1, $2, $3) ON CONFLICT (user_id, role_id) DO UPDATE SET assigned_at = EXCLUDED.assigned_at"
               ["u-1" "r-1" "2023-01-01"]
               {:ql/type :pg/insert
@@ -1017,8 +1007,7 @@
                :on-conflict {:on [:user_id :role_id]
                              :do {:set {:assigned_at :excluded.assigned_at}}}})
 
-    ;; Test 73: INSERT with quoted column names
-    (test-sql 73
+    (test-sql 33
               "INSERT INTO \"user\" (\"id\", \"from\", \"to\", \"select\") VALUES ($1, $2, $3, $4)"
               ["123" "NYC" "LA" "first"]
               {:ql/type :pg/insert
@@ -1028,8 +1017,7 @@
                        :to [:pg/param "LA"]
                        :select [:pg/param "first"]}})
 
-    ;; Test 74: INSERT with schema-qualified table
-    (test-sql 74
+    (test-sql 34
               "INSERT INTO public.users (id, name) VALUES ($1, $2)"
               ["u-1" "Alice"]
               {:ql/type :pg/insert
@@ -1037,8 +1025,7 @@
                :value {:id [:pg/param "u-1"]
                        :name [:pg/param "Alice"]}})
 
-    ;; Test 76: INSERT with interval type
-    (test-sql 76
+    (test-sql 35
               "INSERT INTO schedules (id, name, duration) VALUES ($1, $2, INTERVAL '1 hour 30 minutes')"
               ["sch-1" "Meeting"]
               {:ql/type :pg/insert
@@ -1047,8 +1034,7 @@
                        :name [:pg/param "Meeting"]
                        :duration [:pg/cast [:pg/sql "'1 hour 30 minutes'"] :pg_catalog.interval]}})
 
-    ;; Test 77: INSERT with boolean expressions
-    (test-sql 77
+    (test-sql 36
               "INSERT INTO feature_flags (id, name, enabled) VALUES ($1, $2, $3 = 'true')"
               ["ff-1" "new_ui" "true"]
               {:ql/type :pg/insert
@@ -1057,8 +1043,7 @@
                        :name [:pg/param "new_ui"]
                        :enabled [:= [:pg/param "true"] :true]}})
 
-    ;; Test 78: INSERT with CASE expression
-    (test-sql 78
+    (test-sql 37
               "INSERT INTO users (id, name, status) VALUES ($1, $2, CASE WHEN $3 > 18 THEN 'adult' ELSE 'minor' END)"
               ["u-1" "John" 25]
               {:ql/type :pg/insert
@@ -1069,8 +1054,7 @@
                                 [:> [:pg/param 25] 18] :adult
                                 :minor]}})
 
-    ;; Test 81: INSERT with computed column using other columns
-    (test-sql 81
+    (test-sql 38
               "INSERT INTO products (id, price, tax, total) VALUES ($1, $2, $3, $2 * (1 + $3))"
               ["prod-1" 100 0.1]
               {:ql/type :pg/insert
@@ -1080,8 +1064,7 @@
                        :tax [:pg/param 0.1]
                        :total [:* [:pg/param 100] [:+ 1 [:pg/param 0.1]]]}})
 
-    ;; Test 82: INSERT with uuid generation
-    (test-sql 82
+    (test-sql 39
               "INSERT INTO sessions (id, user_id, token) VALUES (uuid_generate_v4(), $1, encode(gen_random_bytes(32), 'hex'))"
               ["user-123"]
               {:ql/type :pg/insert
@@ -1090,8 +1073,7 @@
                        :user_id [:pg/param "user-123"]
                        :token ^:pg/fn [:encode ^:pg/fn [:gen_random_bytes 32] [:pg/sql "'hex'"]]}})
 
-    ;; Test 83: INSERT with ON CONFLICT with WHERE clause in DO UPDATE
-    (test-sql 83
+    (test-sql 40
               "INSERT INTO inventory (product_id, quantity, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (product_id) DO UPDATE SET quantity = inventory.quantity + EXCLUDED.quantity, updated_at = NOW() WHERE inventory.quantity + EXCLUDED.quantity > 0"
               ["prod-1" 5]
               {:ql/type :pg/insert
@@ -1104,8 +1086,7 @@
                                         :updated_at [:now]}
                                   :where [:> [:+ :inventory.quantity :excluded.quantity] 0]}}})
 
-    ;; Test 85: INSERT with very long column list
-    (test-sql 85
+    (test-sql 41
               "INSERT INTO big_table (col1, col2, col3, col4, col5, col6, col7, col8, col9, col10) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
               ["v1" "v2" "v3" "v4" "v5" "v6" "v7" "v8" "v9" "v10"]
               {:ql/type :pg/insert
@@ -1119,4 +1100,568 @@
                        :col7 [:pg/param "v7"]
                        :col8 [:pg/param "v8"]
                        :col9 [:pg/param "v9"]
-                       :col10 [:pg/param "v10"]}})))
+                       :col10 [:pg/param "v10"]}}))
+
+(testing "INSERT with WITH clause"
+  (test-sql 42
+            "WITH active_users AS (SELECT id FROM users WHERE active = true) INSERT INTO user_stats (user_id, calculated_at) SELECT id as user_id, NOW() as calculated_at FROM active_users"
+            {:ql/type :pg/cte
+             :with {:active_users {:select {:id :id}
+                                   :from :users
+                                   :where [:= :active true]}}
+             :insert {:ql/type :pg/insert-select
+                      :into :user_stats
+                      :select {:select {:user_id :id
+                                        :calculated_at [:now]}
+                               :from :active_users}}})))
+
+(deftest update-tests
+  (testing "Basic UPDATE queries"
+
+    (test-sql 1
+              "UPDATE healthplan SET a = tbl.b FROM some_table tbl WHERE healthplan.id = $1"
+              ["ups"]
+              {:ql/type :pg/update
+               :update :healthplan
+               :set {:a :tbl.b}
+               :from {:tbl :some_table}
+               :where [:= :healthplan.id [:pg/param "ups"]]})
+
+    (test-sql 2
+              "UPDATE healthplan SET a = tbl.b FROM some_table tbl WHERE healthplan.id = $1 RETURNING *"
+              ["ups"]
+              {:ql/type :pg/update
+               :update :healthplan
+               :set {:a :tbl.b}
+               :from {:tbl :some_table}
+               :where [:= :healthplan.id [:pg/param "ups"]]
+               :returning [:pg/columns :*]})
+
+    (test-sql 3
+              "UPDATE healthplan SET resource = resource || jsonb_build_object('status', $1) WHERE id = $2"
+              ["some-val" "some-id"]
+              {:ql/type :pg/update
+               :update :healthplan
+               :set {:resource ^:pg/op[:|| :resource ^:pg/fn[:jsonb_build_object [:pg/sql "'status'"] [:pg/param "some-val"]]]}
+               :where ^:pg/op[:= :id [:pg/param "some-id"]]})
+
+    (test-sql 4
+              "UPDATE ORU SET resource = resource || jsonb_build_object('status', $1) WHERE id = $2"
+              ["some-val" "some-id"]
+              {:ql/type :pg/update
+               :update :oru
+               :set {:resource ^:pg/op[:|| :resource ^:pg/fn[:jsonb_build_object [:pg/sql "'status'"] [:pg/param "some-val"]]]}
+               :where ^:pg/op[:= :id [:pg/param "some-id"]]})
+
+    (test-sql 5
+              "UPDATE AmdExport SET resource = resource || jsonb_build_object('status', $1) WHERE resource->'status' IS NULL"
+              ["pending"]
+              {:ql/type :pg/update
+               :update :amdexport
+               :set {:resource ^:pg/op[:|| :resource ^:pg/fn[:jsonb_build_object [:pg/sql "'status'"] [:pg/param "pending"]]]}
+               :where ^:pg/op[:is [:-> :resource :status] nil]})
+
+    (test-sql 6
+              "UPDATE Document SET resource = resource || jsonb_build_object('caseNumber', $1) WHERE id = $2"
+              ["new-case-id" "doc-id"]
+              {:ql/type :pg/update
+               :update :document
+               :set {:resource ^:pg/op[:|| :resource ^:pg/fn[:jsonb_build_object [:pg/sql "'caseNumber'"] [:pg/param "new-case-id"]]]}
+               :where ^:pg/op[:= :id [:pg/param "doc-id"]]})
+
+    (test-sql 7
+              "UPDATE BillingCase SET resource = resource || jsonb_build_object('report_no', id || $1) WHERE id ILIKE $2"
+              [".CV" "%Z%"]
+              {:ql/type :pg/update
+               :update :billingcase
+               :set {:resource ^:pg/op[:|| :resource ^:pg/fn[:jsonb_build_object [:pg/sql "'report_no'"] ^:pg/op[:|| :id [:pg/param ".CV"]]]]}
+               :where [:ilike :id [:pg/param "%Z%"]]}))
+
+  (testing "Complex UPDATE queries"
+
+    (test-sql 8
+              "UPDATE xinvoice SET resource = resource || jsonb_build_object('status', $1, 'history', resource #>> '{history}' || jsonb_build_array(jsonb_build_object('status', $2, 'user', jsonb_build_object('id', $3), 'date', now()))) RETURNING id"
+              ["sent" "sent" "id"]
+              {:ql/type :pg/update
+               :update :xinvoice
+               :set {:resource ^:pg/op[:|| :resource
+                                       ^:pg/fn[:jsonb_build_object
+                                               [:pg/sql "'status'"] [:pg/param "sent"]
+                                               [:pg/sql "'history'"] ^:pg/op[:|| [:jsonb/#>> :resource [:history]]
+                                                                             ^:pg/fn[:jsonb_build_array
+                                                                                     ^:pg/fn[:jsonb_build_object
+                                                                                             [:pg/sql "'status'"] [:pg/param "sent"]
+                                                                                             [:pg/sql "'user'"] ^:pg/fn[:jsonb_build_object [:pg/sql "'id'"] [:pg/param "id"]]
+                                                                                             [:pg/sql "'date'"] [:now]]]]]]}
+               :returning [:pg/columns :id]})
+
+    (test-sql 9
+              "UPDATE healthplan
+               SET resource = resource || jsonb_build_object('identifier', jsonb_build_array(
+                 jsonb_build_object('value', resource #>> '{\"clearing_house\",\"advance_md\",\"payer-id\"}', 'system', $1),
+                 jsonb_build_object('value', resource #>> '{\"clearing_house\",\"change_healthcare\",\"payer-id\"}', 'system', $2),
+                 jsonb_build_object('value', resource #>> '{\"clearing_house\",omega,\"payer-id\"}', 'system', $3)))
+               WHERE resource -> 'clearing_house' IS NOT NULL"
+              ["amd" "change_healthcare" "omega"]
+              {:ql/type :pg/update
+               :update :healthplan
+               :set {:resource ^:pg/op[:|| :resource
+                                       ^:pg/fn[:jsonb_build_object
+                                               [:pg/sql "'identifier'"]
+                                               ^:pg/fn[:jsonb_build_array
+                                                       ^:pg/fn[:jsonb_build_object
+                                                               [:pg/sql "'value'"] [:jsonb/#>> :resource [:clearing_house :advance_md :payer-id]]
+                                                               [:pg/sql "'system'"] [:pg/param "amd"]]
+                                                       ^:pg/fn[:jsonb_build_object
+                                                               [:pg/sql "'value'"] [:jsonb/#>> :resource [:clearing_house :change_healthcare :payer-id]]
+                                                               [:pg/sql "'system'"] [:pg/param "change_healthcare"]]
+                                                       ^:pg/fn[:jsonb_build_object
+                                                               [:pg/sql "'value'"] [:jsonb/#>> :resource [:clearing_house :omega :payer-id]]
+                                                               [:pg/sql "'system'"] [:pg/param "omega"]]]]]}
+               :where ^:pg/op[:is [:-> :resource :clearing_house] [:pg/sql "NOT NULL"]]}))
+
+  (testing "UPDATE with multiple columns"
+
+    (test-sql 10
+              "UPDATE employees SET name = $1, salary = $2, updated_at = NOW() WHERE id = $3"
+              ["John Doe" 75000 "emp-123"]
+              {:ql/type :pg/update
+               :update :employees
+               :set {:name [:pg/param "John Doe"]
+                     :salary [:pg/param 75000]
+                     :updated_at [:now]}
+               :where [:= :id [:pg/param "emp-123"]]})
+
+    (test-sql 11
+              "UPDATE users SET status = 'active', verified = true WHERE email = $1"
+              ["user@example.com"]
+              {:ql/type :pg/update
+               :update :users
+               :set {:status :active
+                     :verified true}
+               :where [:= :email [:pg/param "user@example.com"]]})
+
+    (test-sql 12
+              "UPDATE inventory SET quantity = quantity + $1 WHERE product_id = $2 AND quantity + $1 > 0"
+              [10 "prod-456"]
+              {:ql/type :pg/update
+               :update :inventory
+               :set {:quantity [:+ :quantity [:pg/param 10]]}
+               :where [:and
+                       [:= :product_id [:pg/param "prod-456"]]
+                       [:> [:+ :quantity [:pg/param 10]] 0]]}))
+
+  (testing "UPDATE with subqueries"
+
+    (test-sql 13
+              "UPDATE products SET price = (SELECT AVG(price) FROM products WHERE category = 'electronics') WHERE category = 'electronics' AND price IS NULL"
+              {:ql/type :pg/update
+               :update :products
+               :set {:price {:ql/type :pg/sub-select
+                             :select [:avg :price]
+                             :from :products
+                             :where [:= :category :electronics]}}
+               :where [:and
+                       [:= :category :electronics]
+                       [:is :price nil]]})
+
+    (test-sql 14
+              "UPDATE users SET last_order_date = (SELECT MAX(created_at) FROM orders WHERE orders.user_id = users.id) WHERE active = true"
+              {:ql/type :pg/update
+               :update :users
+               :set {:last_order_date {:ql/type :pg/sub-select
+                                       :select [:max :created_at]
+                                       :from :orders
+                                       :where [:= :orders.user_id :users.id]}}
+               :where [:= :active true]}))
+
+  (testing "UPDATE with CASE expressions"
+
+    (test-sql 15
+              "UPDATE products SET status = CASE WHEN quantity > 100 THEN 'in_stock' WHEN quantity > 0 THEN 'low_stock' ELSE 'out_of_stock' END"
+              {:ql/type :pg/update
+               :update :products
+               :set {:status [:cond
+                              [:> :quantity 100] :in_stock
+                              [:> :quantity 0] :low_stock
+                              :out_of_stock]}})
+
+    (test-sql 16
+              "UPDATE employees SET bonus = CASE department WHEN 'sales' THEN salary * 0.1 WHEN 'engineering' THEN salary * 0.15 ELSE salary * 0.05 END"
+              {:ql/type :pg/update
+               :update :employees
+               :set {:bonus [:case :department
+                             :sales [:* :salary 0.1]
+                             :engineering [:* :salary 0.15]
+                             [:* :salary 0.05]]}})
+
+    (test-sql 17
+              "UPDATE orders SET discount = CASE WHEN total > 1000 THEN 0.2 WHEN total > 500 THEN 0.1 ELSE 0 END WHERE created_at > $1"
+              ["2023-01-01"]
+              {:ql/type :pg/update
+               :update :orders
+               :set {:discount [:cond
+                                [:> :total 1000] 0.2
+                                [:> :total 500] 0.1
+                                0]}
+               :where [:> :created_at [:pg/param "2023-01-01"]]}))
+
+  (testing "UPDATE with JSONB operations"
+
+    (test-sql 18
+              "UPDATE users SET preferences = jsonb_set(preferences, '{notifications,email}', $1) WHERE id = $2"
+              ["true" "user-123"]
+              {:ql/type :pg/update
+               :update :users
+               :set {:preferences [:pg/jsonb_set :preferences [:notifications :email] [:pg/param "true"]]}
+               :where [:= :id [:pg/param "user-123"]]})
+
+    (test-sql 19
+              "UPDATE products SET metadata = metadata || $1::jsonb WHERE id = $2"
+              ["{\"featured\":true}" "prod-789"]
+              {:ql/type :pg/update
+               :update :products
+               :set {:metadata [:|| :metadata [:pg/cast [:pg/param "{\"featured\":true}"] :jsonb]]}
+               :where [:= :id [:pg/param "prod-789"]]})
+
+    (test-sql 20
+              "UPDATE settings SET config = jsonb_strip_nulls(config || jsonb_build_object('theme', $1, 'language', $2)) WHERE user_id = $3"
+              ["dark" "en" "user-456"]
+              {:ql/type :pg/update
+               :update :settings
+               :set {:config ^:pg/fn[:jsonb_strip_nulls
+                              [:|| :config
+                               ^:pg/fn[:jsonb_build_object
+                                       [:pg/sql "'theme'"] [:pg/param "dark"]
+                                       [:pg/sql "'language'"] [:pg/param "en"]]]]}
+               :where [:= :user_id [:pg/param "user-456"]]}))
+
+  (testing "UPDATE with complex WHERE clauses"
+
+    (test-sql 21
+              "UPDATE tasks SET status = 'overdue' WHERE due_date < CURRENT_DATE AND status NOT IN ('completed', 'cancelled')"
+              {:ql/type :pg/update
+               :update :tasks
+               :set {:status :overdue}
+               :where [:and
+                       [:< :due_date :CURRENT_DATE]
+                       [:not-in :status [:pg/list :completed :cancelled]]]})
+
+    (test-sql 22
+              "UPDATE employees SET department_id = $1 WHERE department_id IN (SELECT id FROM departments WHERE name = $2)"
+              [10 "Old Department"]
+              {:ql/type :pg/update
+               :update :employees
+               :set {:department_id [:pg/param 10]}
+               :where [:in :department_id
+                       {:ql/type :pg/sub-select
+                        :select :id
+                        :from :departments
+                        :where [:= :name [:pg/param "Old Department"]]}]})
+
+    (test-sql 23
+              "UPDATE products SET price = price * 0.9 WHERE category_id = $1 AND (price > 100 OR quantity < 10)"
+              [5]
+              {:ql/type :pg/update
+               :update :products
+               :set {:price [:* :price 0.9]}
+               :where [:and
+                       [:= :category_id [:pg/param 5]]
+                       [:or
+                        [:> :price 100]
+                        [:< :quantity 10]]]}))
+
+  (testing "UPDATE with table aliases and schema"
+
+    (test-sql 24
+              "UPDATE public.users SET modified_at = NOW() WHERE id = $1"
+              ["user-999"]
+              {:ql/type :pg/update
+               :update :public.users
+               :set {:modified_at [:now]}
+               :where [:= :id [:pg/param "user-999"]]})
+
+    (test-sql 25
+              "UPDATE \"MyTable\" SET \"MyColumn\" = $1 WHERE \"ID\" = $2"
+              ["new value" 123]
+              {:ql/type :pg/update
+               :update :MyTable
+               :set {:MyColumn [:pg/param "new value"]}
+               :where [:= :ID [:pg/param 123]]})))
+
+(deftest update-edge-case-tests
+  (testing "UPDATE with DEFAULT values"
+
+    (test-sql 26
+              "UPDATE users SET created_at = DEFAULT, status = DEFAULT WHERE id = $1"
+              ["user-123"]
+              {:ql/type :pg/update
+               :update :users
+               :set {:created_at :DEFAULT
+                     :status :DEFAULT}
+               :where [:= :id [:pg/param "user-123"]]})
+
+    (test-sql 27
+              "UPDATE products SET price = DEFAULT, updated_at = CURRENT_TIMESTAMP WHERE sku = $1"
+              ["SKU-789"]
+              {:ql/type :pg/update
+               :update :products
+               :set {:price :DEFAULT
+                     :updated_at :CURRENT_TIMESTAMP}
+               :where [:= :sku [:pg/param "SKU-789"]]}))
+
+  (testing "UPDATE with array operations"
+
+    (test-sql 28
+              "UPDATE users SET tags = ARRAY['admin', 'verified'] WHERE id = $1"
+              ["user-456"]
+              {:ql/type :pg/update
+               :update :users
+               :set {:tags [:pg/array [:admin :verified]]}
+               :where [:= :id [:pg/param "user-456"]]})
+
+    (test-sql 29
+              "UPDATE products SET categories = categories || ARRAY[$1, $2] WHERE id = $3"
+              ["electronics" "featured" "prod-123"]
+              {:ql/type :pg/update
+               :update :products
+               :set {:categories [:|| :categories [:pg/array [[:pg/param "electronics"] [:pg/param "featured"]]]]}
+               :where [:= :id [:pg/param "prod-123"]]}))
+
+  (testing "UPDATE with mathematical operations"
+
+    (test-sql 30
+              "UPDATE accounts SET balance = balance - $1, updated_at = NOW() WHERE id = $2 AND balance >= $1"
+              [100.50 "acc-789"]
+              {:ql/type :pg/update
+               :update :accounts
+               :set {:balance [:- :balance [:pg/param 100.50]]
+                     :updated_at [:now]}
+               :where [:and
+                       [:= :id [:pg/param "acc-789"]]
+                       [:>= :balance [:pg/param 100.50]]]})
+
+    (test-sql 31
+              "UPDATE statistics SET views = views + 1, rating = (rating * review_count + $1) / (review_count + 1), review_count = review_count + 1 WHERE id = $2"
+              [4.5 "stat-123"]
+              {:ql/type :pg/update
+               :update :statistics
+               :set {:views [:+ :views 1]
+                     :rating [:/ [:+ [:* :rating :review_count] [:pg/param 4.5]]
+                              [:+ :review_count 1]]
+                     :review_count [:+ :review_count 1]}
+               :where [:= :id [:pg/param "stat-123"]]})
+
+    (test-sql 32
+              "UPDATE inventory SET quantity = GREATEST(0, quantity - $1) WHERE product_id = $2"
+              [5 "prod-999"]
+              {:ql/type :pg/update
+               :update :inventory
+               :set {:quantity [:greatest 0 [:- :quantity [:pg/param 5]]]}
+               :where [:= :product_id [:pg/param "prod-999"]]}))
+
+  (testing "UPDATE with complex JSONB path operations"
+
+    (test-sql 33
+              "UPDATE users SET preferences = jsonb_set(preferences, '{notifications,channels}', preferences->'notifications'->'channels' || jsonb_build_array($1)) WHERE id = $2"
+              ["sms" "user-789"]
+              {:ql/type :pg/update
+               :update :users
+               :set {:preferences [:pg/jsonb_set :preferences [:notifications :channels] [:||
+                                                                                          [:-> [:-> :preferences [:pg/sql "'notifications'"]] [:pg/sql "'channels'"]]
+                                                                                          ^:pg/fn[:jsonb_build_array [:pg/param "sms"]]]]}
+               :where [:= :id [:pg/param "user-789"]]})
+
+    (test-sql 34
+              "UPDATE products SET attributes = jsonb_set(attributes, '{dimensions}', jsonb_build_object('width', $1, 'height', $2, 'depth', $3)) WHERE sku = $4"
+              [10 20 5 "SKU-123"]
+              {:ql/type :pg/update
+               :update :products
+               :set {:attributes [:pg/jsonb_set :attributes [:dimensions]
+                                  ^:pg/fn[:jsonb_build_object
+                                          [:pg/sql "'width'"] [:pg/param 10]
+                                          [:pg/sql "'height'"] [:pg/param 20]
+                                          [:pg/sql "'depth'"] [:pg/param 5]]]}
+               :where [:= :sku [:pg/param "SKU-123"]]}))
+
+  (testing "UPDATE with string operations"
+
+    (test-sql 35
+              "UPDATE users SET email = LOWER(email), username = UPPER(username) WHERE id = $1"
+              ["user-123"]
+              {:ql/type :pg/update
+               :update :users
+               :set {:email ^:pg/fn[:lower :email]
+                     :username ^:pg/fn[:upper :username]}
+               :where [:= :id [:pg/param "user-123"]]})
+
+    (test-sql 36
+              "UPDATE products SET description = CONCAT(name, ' - ', category, ' (', brand, ')') WHERE description IS NULL"
+              {:ql/type :pg/update
+               :update :products
+               :set {:description ^:pg/fn[:concat :name [:pg/sql "' - '"] :category [:pg/sql "' ('"] :brand [:pg/sql "')'"]]}
+               :where [:is :description nil]})
+
+    (test-sql 37
+              "UPDATE articles SET slug = REGEXP_REPLACE(LOWER(title), '[^a-z0-9]+', '-', 'g') WHERE slug IS NULL"
+              {:ql/type :pg/update
+               :update :articles
+               :set {:slug ^:pg/fn[:regexp_replace ^:pg/fn[:lower :title] [:pg/sql "'[^a-z0-9]+'"] [:pg/sql "'-'"] [:pg/sql "'g'"]]}
+               :where [:is :slug nil]}))
+
+  (testing "UPDATE with date/time operations"
+
+    (test-sql 38
+              "UPDATE subscriptions SET expires_at = expires_at + INTERVAL '1 month' WHERE id = $1 AND auto_renew = true"
+              ["sub-123"]
+              {:ql/type :pg/update
+               :update :subscriptions
+               :set {:expires_at [:+ :expires_at [:pg/cast [:pg/sql "'1 month'"] :pg_catalog.interval]]}
+               :where [:and
+                       [:= :id [:pg/param "sub-123"]]
+                       [:= :auto_renew true]]})
+
+    (test-sql 39
+              "UPDATE events SET scheduled_date = date_trunc('day', scheduled_date) + INTERVAL '18 hours' WHERE event_type = $1"
+              ["webinar"]
+              {:ql/type :pg/update
+               :update :events
+               :set {:scheduled_date [:+ ^:pg/fn[:date_trunc [:pg/sql "'day'"] :scheduled_date]
+                                      [:pg/cast [:pg/sql "'18 hours'"] :pg_catalog.interval]]}
+               :where [:= :event_type [:pg/param "webinar"]]})
+
+    (test-sql 40
+              "UPDATE tasks SET reminder_at = due_date - INTERVAL '2 days' WHERE reminder_at IS NULL AND due_date > NOW()"
+              {:ql/type :pg/update
+               :update :tasks
+               :set {:reminder_at [:- :due_date [:pg/cast [:pg/sql "'2 days'"] :pg_catalog.interval]]}
+               :where [:and
+                       [:is :reminder_at nil]
+                       [:> :due_date [:now]]]}))
+
+  (testing "UPDATE with EXISTS and NOT EXISTS"
+
+    (test-sql 41
+              "UPDATE users SET active = false WHERE NOT EXISTS (SELECT 1 FROM orders WHERE orders.user_id = users.id AND orders.created_at > NOW() - INTERVAL '6 months')"
+              {:ql/type :pg/update
+               :update :users
+               :set {:active false}
+               :where [:not [:exists {:ql/type :pg/sub-select
+                                      :select 1
+                                      :from :orders
+                                      :where [:and
+                                              [:= :orders.user_id :users.id] [:> :orders.created_at [:- [:now] [:pg/cast [:pg/sql "'6 months'"] :pg_catalog.interval]]]]}]]}))
+
+  (testing "UPDATE with CTEs"
+
+    (test-sql 42
+              "WITH active_users AS (SELECT id FROM users WHERE last_login > NOW() - INTERVAL '30 days') UPDATE user_stats SET status = 'active' WHERE user_id IN (SELECT id FROM active_users)"
+              {:ql/type :pg/cte
+               :with {:active_users {:select {:id :id}
+                                     :from :users
+                                     :where [:> :last_login [:- [:now] [:pg/cast [:pg/sql "'30 days'"] :pg_catalog.interval]]]}}
+               :select {:ql/type :pg/update
+                        :update :user_stats
+                        :set {:status :active}
+                        :where [:in :user_id {:ql/type :pg/sub-select
+                                              :select :id
+                                              :from :active_users}]}})
+
+    (test-sql 43
+              "WITH avg_prices AS (SELECT category_id, AVG(price) as avg_price FROM products GROUP BY category_id) UPDATE products SET price = ap.avg_price * 0.9 FROM avg_prices ap WHERE products.category_id = ap.category_id AND products.price IS NULL"
+              {:ql/type :pg/cte
+               :with {:avg_prices {:select {:category_id :category_id
+                                            :avg_price [:avg :price]}
+                                   :from :products
+                                   :group-by {:category_id :category_id}}}
+               :select {:ql/type :pg/update
+                        :update :products
+                        :set {:price [:* :ap.avg_price 0.9]}
+                        :from {:ap :avg_prices}
+                        :where [:and
+                                [:= :products.category_id :ap.category_id]
+                                [:is :products.price nil]]}}))
+
+    (testing "UPDATE with type casting edge cases"
+
+      (test-sql 44
+                "UPDATE events SET metadata = metadata || ($1::text)::jsonb WHERE id = $2"
+                ["{\"source\":\"api\"}" "evt-123"]
+                {:ql/type :pg/update
+                 :update :events
+                 :set {:metadata [:|| :metadata [:pg/cast [:pg/cast [:pg/param "{\"source\":\"api\"}"] :text] :jsonb]]}
+                 :where [:= :id [:pg/param "evt-123"]]}))
+
+    (testing "UPDATE with NULL handling"
+
+      (test-sql 45
+                "UPDATE orders SET discount = COALESCE(discount, 0) + $1 WHERE id = $2"
+                [5 "ord-123"]
+                {:ql/type :pg/update
+                 :update :orders
+                 :set {:discount [:+ [:pg/coalesce :discount 0] [:pg/param 5]]}
+                 :where [:= :id [:pg/param "ord-123"]]}))
+
+    (testing "UPDATE with RETURNING complex expressions"
+
+      (test-sql 46
+                "UPDATE inventory SET quantity = quantity - $1 WHERE product_id = $2 RETURNING product_id, quantity, quantity < 10 as low_stock"
+                [5 "prod-789"]
+                {:ql/type :pg/update
+                 :update :inventory
+                 :set {:quantity [:- :quantity [:pg/param 5]]}
+                 :where [:= :product_id [:pg/param "prod-789"]]
+                 :returning [:pg/columns :product_id :quantity [:as [:< :quantity 10] :low_stock]]})
+
+      (test-sql 47
+                "UPDATE users SET credits = credits + $1 WHERE id = $2 RETURNING id, credits, CASE WHEN credits >= 1000 THEN 'premium' WHEN credits >= 100 THEN 'standard' ELSE 'basic' END as tier"
+                [50 "user-123"]
+                {:ql/type :pg/update
+                 :update :users
+                 :set {:credits [:+ :credits [:pg/param 50]]}
+                 :where [:= :id [:pg/param "user-123"]]
+                 :returning [:pg/columns :id :credits
+                             [:as [:cond
+                                   [:>= :credits 1000] :premium
+                                   [:>= :credits 100] :standard
+                                   :basic] :tier]]}))
+
+    (testing "UPDATE with quoted identifiers and reserved words"
+
+      (test-sql 49
+                "UPDATE \"user\" SET \"from\" = $1, \"to\" = $2, \"select\" = $3 WHERE \"user\" = $4"
+                ["NYC" "LA" "first-class" "john"]
+                {:ql/type :pg/update
+                 :update :user
+                 :set {:from [:pg/param "NYC"]
+                       :to [:pg/param "LA"]
+                       :select [:pg/param "first-class"]}
+                 :where [:= :user [:pg/param "john"]]})
+
+      (test-sql 50
+                "UPDATE \"order\" SET \"group\" = $1, \"having\" = $2 WHERE \"where\" = $3"
+                ["A" "premium" "US"]
+                {:ql/type :pg/update
+                 :update :order
+                 :set {:group [:pg/param "A"]
+                       :having [:pg/param "premium"]}
+                 :where [:= :where [:pg/param "US"]]}))
+
+    (testing "UPDATE with boolean and comparison operations"
+
+      (test-sql 51
+                "UPDATE products SET on_sale = (discount > 0 AND price < 100), featured = NOT hidden WHERE category_id = $1"
+                [5]
+                {:ql/type :pg/update
+                 :update :products
+                 :set {:on_sale [:and [:> :discount 0] [:< :price 100]]
+                       :featured [:not :hidden]}
+                 :where [:= :category_id [:pg/param 5]]})
+
+      (test-sql 52
+                "UPDATE users SET verified = email IS NOT NULL AND email_confirmed = true AND phone IS NOT NULL WHERE created_at < $1"
+                ["2023-01-01"]
+                {:ql/type :pg/update
+                 :update :users
+                 :set {:verified [:and [:is :email [:pg/sql "NOT NULL"]] [:= :email_confirmed true] [:is :phone [:pg/sql "NOT NULL"]]]}
+                 :where [:< :created_at [:pg/param "2023-01-01"]]})))

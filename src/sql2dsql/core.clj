@@ -92,9 +92,15 @@
 
 (defmethod stmt->dsql :SubLink [x & [opts]]
   (let [subselect (-> x :SubLink :subselect)
-        base-result (stmt->dsql subselect opts)]
-    (merge {:ql/type :pg/sub-select}
-           (dissoc base-result :ql/type))))
+        test-expr (-> x :SubLink :testexpr)
+        sub-res (merge {:ql/type :pg/sub-select}
+                       (dissoc (stmt->dsql subselect opts) :ql/type))]
+    (case (-> x :SubLink :subLinkType)
+      "EXPR_SUBLINK" sub-res
+      "EXISTS_SUBLINK" (with-meta [:exists sub-res] {:pg/fn true})
+      "ALL_SUBLINK" [:all sub-res]
+      "ANY_SUBLINK" [:in (stmt->dsql test-expr opts) sub-res]
+      (throw (Exception. ^String (str "Unknown subLink type: " (-> x :SubLink :subLinkType )))))))
 
 ;; ============================
 ;; SELECT STATEMENTS
@@ -231,11 +237,11 @@
   (let [res-target (:ResTarget x)
         name (:name res-target)
         val (:val res-target)]
-    (if (nil? name)
-      (stmt->dsql val opts)
-      (if (nil? val)
-        (keyword name)
-        [(keyword name) (stmt->dsql val (assoc opts :as-stmt? true))]))))
+    (cond
+      (nil? name) (stmt->dsql val opts)
+      (nil? val) (keyword name)
+      (:return-stmt? opts) [:as (stmt->dsql val (assoc opts :as-stmt? true)) (keyword name)]
+      :else [(keyword name) (stmt->dsql val (assoc opts :as-stmt? true))])))
 
 ;; ============================
 ;; COLUMN REFERENCES
@@ -276,7 +282,9 @@
 
 (defn get-op-name [x]
   (if (= (-> x :A_Expr :kind) "AEXPR_IN")
-    "in"
+    (if (= (-> x :A_Expr :name first :String :sval) "=")
+      "in"
+      "not-in")
     (-> x :A_Expr :name first :String :sval)))
 
 (defmethod stmt->dsql :A_Expr [x & [opts]]
@@ -335,7 +343,7 @@
       (:boolval aconst) (true? (:boolval (:boolval aconst)))
       (:isnull aconst) nil
       (:ival aconst) (if-let [r (-> aconst :ival :ival)] r 0)
-      (:fval aconst) (:fval (:fval aconst))
+      (:fval aconst) (-> aconst :fval :fval Double/parseDouble)
       (:sval aconst) (let [sval (:sval (:sval aconst))]
                        (if-let [[_ arr] (re-matches #"\{(.*)\}" sval)]
                          (parse-arr arr)
@@ -373,6 +381,7 @@
   (let [args (mapv #(stmt->dsql % opts) (-> x :FuncCall :args))
         func (with-meta (into [func-name] args) {:pg/fn true})]
     (cond
+      (= func-name :jsonb_set) (into [:pg/jsonb_set] args)
       (:index-expr? opts) (into [:pg/call] func)
       (:name opts) [name func]
       :else func)))
@@ -420,9 +429,12 @@
   (let [boolop (case (-> x :BoolExpr :boolop)
                  "AND_EXPR" :and
                  "OR_EXPR" :or
+                 "NOT_EXPR" :not
                  :undefined-op)
         args (map (fn [arg] (stmt->dsql arg opts)) (-> x :BoolExpr :args))]
-    (vec (conj args boolop))))
+    (if (= boolop :not)
+      [:not (first args)]
+      (vec (conj args boolop)))))
 
 ;; ============================
 ;; NULL TESTS
@@ -430,7 +442,9 @@
 
 (defmethod stmt->dsql :NullTest [x & [opts]]
   (let [arg (stmt->dsql (-> x :NullTest :arg) opts)]
-    [:is arg nil]))
+    (if (= (-> x :NullTest :nulltesttype) "IS_NULL")
+      [:is arg nil]
+      [:is arg [:pg/sql "NOT NULL"]])))
 
 ;; ============================
 ;; SORT BY EXPRESSIONS
@@ -473,7 +487,7 @@
 (def strategy-methods {"PARTITION_STRATEGY_RANGE" :range
                        "PARTITION_STRATEGY_HASH" :hash})
 
-;; now can only handle range partitioning
+;; now can handle only range partitioning
 (defn handle-partition [name part-spec part-bound & [opts]]
   (let [method (get strategy-methods (:strategy part-spec))]
     {:partition-of name
@@ -637,13 +651,15 @@
     {:keys keys
      :values paired-lists}))
 
+(defn is-as-stmt-with-func? [elem]
+  (and (coll? elem) (= :as (first elem)) (meta (second elem))))
+
 (defn handle-returning [returning-list & [opts]]
-  (let [evaluated-list (map #(stmt->dsql % (assoc opts :not-include-col-name? true :as-stmt? true)) returning-list)]
-    (if (-> returning-list first :ResTarget :name)
-      [:as (last (first evaluated-list)) (first (first evaluated-list))]
-      (if (meta (first evaluated-list))
-        (first evaluated-list)
-        (into [:pg/columns] evaluated-list)))))
+  (let [evaluated-list (map #(stmt->dsql % (assoc opts :not-include-col-name? true)) returning-list)
+        fst (first evaluated-list)]
+    (if (or (is-as-stmt-with-func? fst) (meta fst))
+      fst
+      (into [:pg/columns] evaluated-list))))
 
 (defn insert-base [name type]
   {:ql/type type
@@ -675,9 +691,8 @@
       (str (:schemaname relation) "." (:relname relation))
       (:relname relation))))
 
-(defmethod stmt->dsql :InsertStmt [x & [opts]]
-  (let [stmt (:InsertStmt x)
-        cols (:cols stmt)
+(defn insert-body->dsql [stmt & [opts]]
+  (let [cols (:cols stmt)
         val-list (-> stmt :selectStmt :SelectStmt :valuesLists)
         type (get-insert-type val-list)]
     (cond->
@@ -687,16 +702,32 @@
       (= type :pg/insert-many) (assoc :values (handle-insert-many-values cols val-list opts))
       (= type :pg/insert-select) (assoc :select (stmt->dsql (:selectStmt stmt) opts))
       (:onConflictClause stmt) (assoc :on-conflict (handle-conflict (:onConflictClause stmt) opts))
-      (:returningList stmt) (assoc :returning (handle-returning (:returningList stmt) opts)))))
+      (:returningList stmt) (assoc :returning (handle-returning (:returningList stmt) (assoc opts :return-stmt? true))))))
+
+(defn handle-insert-with [stmt & [opts]]
+  (let [with-map (get-with-map stmt opts)
+        insert-body (insert-body->dsql stmt opts)]
+    {:ql/type :pg/cte
+     :with with-map
+     :insert insert-body}))
+
+(defmethod stmt->dsql :InsertStmt [x & [opts]]
+  (let [stmt (:InsertStmt x)]
+    (if (:withClause stmt)
+      (handle-insert-with stmt opts)
+      (insert-body->dsql stmt opts))))
 
 ;; ============================
 ;; CASE EXPRESSION
 ;; ============================
 
 (defmethod stmt->dsql :CaseExpr [x & [opts]]
-  (let [stmt (:CaseExpr x)]
-    (into [:cond]
-           (conj (reduce conj (map #(stmt->dsql % opts) (:args stmt))) (stmt->dsql (:defresult stmt) opts)))))
+  (let [stmt (:CaseExpr x)
+        arg (:arg stmt)]
+    (into (if arg [:case (stmt->dsql arg opts)] [:cond])
+           (conj
+             (apply into (map #(stmt->dsql % opts) (:args stmt)))
+             (stmt->dsql (:defresult stmt) opts)))))
 
 ;; ============================
 ;; CASE WHEN EXPRESSION
@@ -713,6 +744,64 @@
 
 (defmethod stmt->dsql :SetToDefault [_ & [_]]
   :DEFAULT)
+
+;; ============================
+;; UPDATE STATEMENTS
+;; ============================
+
+(defn update-base [name]
+  {:ql/type :pg/update
+   :update name})
+
+(defn update-body->dsql [stmt & [opts]]
+    (cond->
+      (update-base (get-name (:relation stmt)))
+      (:targetList stmt) (assoc :set (into {} (map #(stmt->dsql % opts) (:targetList stmt))))
+      (:fromClause stmt) (merge (process-from-clause stmt opts))
+      (:whereClause stmt) (assoc :where (stmt->dsql (:whereClause stmt) (assoc opts :not-include-col-name? true)))
+      (:returningList stmt) (assoc :returning (handle-returning (:returningList stmt) (assoc opts :return-stmt? true)))))
+
+(defn handle-update-with-map [stmt & [opts]]
+  (let [with-map (get-with-map stmt opts)
+        update-body (update-body->dsql stmt opts)]
+    {:ql/type :pg/cte
+     :with with-map
+     :select update-body}))
+
+(defmethod stmt->dsql :UpdateStmt [x & [opts]]
+  (let [stmt (:UpdateStmt x)]
+    (if (:withClause stmt)
+      (handle-update-with-map stmt opts)
+      (update-body->dsql stmt opts))))
+
+;; ============================
+;; MIN MAX EXPRESSIONS
+;; ============================
+
+(def min-max-ops {"IS_GREATEST" :greatest})
+
+(defmethod stmt->dsql :MinMaxExpr [x & [opts]]
+  (let [stmt (:MinMaxExpr x)
+        op (get min-max-ops (:op stmt))]
+    (if (:args stmt)
+      (let [args (map #(stmt->dsql % opts) (:args stmt))]
+        (if (= 1 (count args))
+          (first args)
+          (with-meta (into [op] args) {:pg/fn true})))
+      op)))
+
+;; ============================
+;; COALESCE EXPR HANDLER
+;; ============================
+
+(defmethod stmt->dsql :CoalesceExpr [x & [opts]]
+  (let [stmt (:CoalesceExpr x)]
+    (if (:args stmt)
+      (let [args (map #(stmt->dsql % opts) (:args stmt))]
+        (if (= 1 (count args))
+          (first args)
+          (with-meta (into [:pg/coalesce] args) {:pg/fn true})))
+      :pg/coalesce)))
 
 ;; ============================
 ;; DEFAULT HANDLER
