@@ -106,10 +106,9 @@
       (let [target-results (map-indexed (fn [i x] (stmt->dsql x (assoc opts :column (inc i)))) target-list)]
         (cond
           (not (coll? (first target-results))) (first target-results)
-          (= 1 (count (vec (first target-results)))) [(first (vec (first target-results)))]
+          (= 1 (count (vec (first target-results)))) [(first(first target-results))]
           (meta (first target-results)) (vec (first target-results))
-          :else (into {} target-results))
-          )))
+          :else (into {} target-results)))))
 
 (defn on-distinct [distinct-on target-list & [opts]]
   (if (empty? (first distinct-on))
@@ -655,21 +654,20 @@
     (if (= 1 (count val-list))
       :pg/insert
       :pg/insert-many)
-    :pg/insert-select)
-  )
+    :pg/insert-select))
 
 (defn handle-conflict [on-conflict & [opts]]
   {:on (into [] (map #(stmt->dsql % opts) (-> on-conflict :infer :indexElems)))
-   :do (let [action (:action on-conflict)]
-         (case action
-           "ONCONFLICT_UPDATE" (cond->
-                                 {:set (into {} (map #(stmt->dsql % opts) (:targetList on-conflict)))}
-                                 (:whereClause on-conflict) (assoc
-                                                              :where
-                                                              (stmt->dsql
-                                                                (:whereClause on-conflict)
-                                                                (assoc opts :not-include-col-name? true))))
-           :nothing))})
+   :do
+   (case (:action on-conflict)
+   "ONCONFLICT_UPDATE" (cond->
+                         {:set (into {} (map #(stmt->dsql % opts) (:targetList on-conflict)))}
+                         (:whereClause on-conflict) (assoc
+                                                      :where
+                                                      (stmt->dsql
+                                                        (:whereClause on-conflict)
+                                                        (assoc opts :not-include-col-name? true))))
+   :nothing)})
 
 (defn get-name [relation]
   (keyword
