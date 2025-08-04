@@ -98,9 +98,9 @@
     (case (-> x :SubLink :subLinkType)
       "EXPR_SUBLINK" sub-res
       "EXISTS_SUBLINK" (with-meta [:exists sub-res] {:pg/fn true})
-      "ALL_SUBLINK" [:all sub-res]
       "ANY_SUBLINK" [:in (stmt->dsql test-expr opts) sub-res]
-      (throw (Exception. ^String (str "Unknown subLink type: " (-> x :SubLink :subLinkType )))))))
+      [(keyword (str "unknown-sublink-type/" (-> x :SubLink :subLinkType))) {:testexpr-result (stmt->dsql test-expr opts)
+                                                                             :subselect-result sub-res}])))
 
 ;; ============================
 ;; SELECT STATEMENTS
@@ -167,9 +167,9 @@
 (defn get-op-type [op all]
   (case op
     "SETOP_UNION" (if all :union-all :union)
-    "SETOP_INTERSECT" :intersect
-    "SETOP_EXCEPT" :except
-    (throw (Exception. ^String (str "Unknown set operation: " op)))))
+    ;"SETOP_INTERSECT" :intersect
+    ;"SETOP_EXCEPT" :except
+    (keyword (str "unknown-operation-type/" op))))
 
 (defn process-op [select-stmt & [opts]]
   (let [op-key (get-op-type (:op select-stmt) (:all select-stmt))
@@ -228,6 +228,14 @@
       (:withClause select-stmt) (process-with-clause select-stmt x opts)
       (not= (:op select-stmt) "SETOP_NONE") (process-op select-stmt opts)
       :else (select-body->dsql select-stmt opts))))
+
+;; ============================
+;; ROW EXPRESSIONS
+;; ============================
+
+(defmethod stmt->dsql :RowExpr [x & [opts]]
+  (let [row-expr-args (-> x :RowExpr :args)]
+    (into [:pg/list] (map #(stmt->dsql % opts) row-expr-args))))
 
 ;; ============================
 ;; RES TARGETS
@@ -350,8 +358,7 @@
                          (if (or (:func-arg? opts) (:val-lists? opts) (:type-cast? opts))
                            [:pg/sql (str \' sval \')]
                            (keyword sval))))
-      :else
-      (throw (Exception. ^String (str "Unsupported A_Const: " aconst))))))
+      :else (keyword (str "unknown-aconst-type/" aconst)))))
 
 ;; ============================
 ;; FUNCTION CALLS
@@ -430,7 +437,7 @@
                  "AND_EXPR" :and
                  "OR_EXPR" :or
                  "NOT_EXPR" :not
-                 :undefined-op)
+                 :undefined-bool-op)
         args (map (fn [arg] (stmt->dsql arg opts)) (-> x :BoolExpr :args))]
     (if (= boolop :not)
       [:not (first args)]
@@ -487,16 +494,19 @@
 (def strategy-methods {"PARTITION_STRATEGY_RANGE" :range
                        "PARTITION_STRATEGY_HASH" :hash})
 
-;; now can handle only range partitioning
 (defn handle-partition [name part-spec part-bound & [opts]]
-  (let [method (get strategy-methods (:strategy part-spec))]
+  (let [method (get strategy-methods (:strategy part-spec))
+        method (if method method (keyword (str "unknown-strategy-method/" (:strategy part-spec))))]
     {:partition-of name
      :partition-by {:method method
                     :expr (-> part-spec :partParams first :PartitionElem :name keyword)}
      :for (case method
-            :range  {:from (stmt->dsql (-> part-bound :lowerdatums first) opts)
-                     :to (stmt->dsql (-> part-bound :upperdatums first) opts)}
-            :hash {:modulus (:modulus part-bound) })}))
+            :range {:from (stmt->dsql (-> part-bound :lowerdatums first) opts)
+                    :to (stmt->dsql (-> part-bound :upperdatums first) opts)}
+            :hash {:modulus (:modulus part-bound)}
+            {:type method
+             :part-spec part-spec
+             :part-bound part-bound})}))
 
 (def rel-persistence {"p" {:permanent true}
                       "t" {:temporary true}
@@ -508,6 +518,7 @@
     (cond->
       {:ql/type :pg/create-table :table-name (-> create-stmt :relation :relname keyword)}
       (:if_not_exists create-stmt) (assoc :if-not-exists true)
+      (nil? rel_persistence) (assoc :unknown-rel-persistence (-> create-stmt :relation :relpersistence))
       (:unlogged rel_persistence) (assoc :unlogged true)
       (:temporary rel_persistence) (assoc :temporary true)
       (:tableElts create-stmt) (merge (handle-table-elements (:tableElts create-stmt) opts))
@@ -569,7 +580,7 @@
         "CONSTR_DEFAULT" [:DEFAULT  (stmt->dsql (:raw_expr con) opts)]
         "CONSTR_UNIQUE" ["UNIQUE"]
         "CONSTR_FOREIGN" (on-foreign con opts)
-        :else (throw (Exception. ^String (str "Unimplemented"))))
+        [(keyword (str "unknown-constraint-type/" con-type))])
       (throw (Exception. ^String (str "No constraint type provided"))))))
 
 ;; ============================
@@ -587,9 +598,15 @@
 ;; CREATE TABLE AS STATEMENTS
 ;; ============================
 
+(defn get-name [relation]
+  (keyword
+    (if (:schemaname relation)
+      (str (:schemaname relation) "." (:relname relation))
+      (:relname relation))))
+
 (defmethod stmt->dsql :CreateTableAsStmt [x & [opts]]
   (let [create-table-as-stmt (:CreateTableAsStmt x)
-        name (-> create-table-as-stmt :into :rel :relname keyword)
+        name (get-name (-> create-table-as-stmt :into :rel))
         rel_persistence (get rel-persistence (-> create-table-as-stmt :relation :relpersistence))]
     (cond->
       {:ql/type :pg/create-table-as :table name}
@@ -683,13 +700,8 @@
                                                       (stmt->dsql
                                                         (:whereClause on-conflict)
                                                         (assoc opts :not-include-col-name? true))))
-   :nothing)})
-
-(defn get-name [relation]
-  (keyword
-    (if (:schemaname relation)
-      (str (:schemaname relation) "." (:relname relation))
-      (:relname relation))))
+   "ONCONFLICT_NOTHING" :nothing
+   {(keyword (str "unknown-action-type" (:action on-conflict))) on-conflict})})
 
 (defn insert-body->dsql [stmt & [opts]]
   (let [cols (:cols stmt)
@@ -782,9 +794,10 @@
 
 (defmethod stmt->dsql :MinMaxExpr [x & [opts]]
   (let [stmt (:MinMaxExpr x)
-        op (get min-max-ops (:op stmt))]
+        op (get min-max-ops (:op stmt))
+        op (if op op (keyword (str "unknown-min-max-op/" (:op stmt))))]
     (if (:args stmt)
-      (let [args (map #(stmt->dsql % opts) (:args stmt))]
+      (let [args (map #(stmt->dsql % (assoc opts :not-include-col-name? true)) (:args stmt))]
         (if (= 1 (count args))
           (first args)
           (with-meta (into [op] args) {:pg/fn true})))

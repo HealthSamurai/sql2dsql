@@ -362,7 +362,7 @@
               "SELECT name FROM employees INTERSECT SELECT name FROM contractors"
               {:select {:name :name}
                :from :employees
-               :intersect {:contractors {:ql/type :pg/sub-select
+               :unknown-operation-type/SETOP_INTERSECT {:contractors {:ql/type :pg/sub-select
                                          :select {:name :name}
                                          :from :contractors}}})
 
@@ -370,7 +370,7 @@
               "SELECT name FROM employees EXCEPT SELECT name FROM contractors"
               {:select {:name :name}
                :from :employees
-               :except {:contractors {:ql/type :pg/sub-select
+               :unknown-operation-type/SETOP_EXCEPT {:contractors {:ql/type :pg/sub-select
                                       :select {:name :name}
                                       :from :contractors}}})
 
@@ -418,7 +418,16 @@
               {:select {:has_high_earners [:exists {:ql/type :pg/sub-select
                                                     :select {:a :a}
                                                     :from :employees
-                                                    :where [:> :salary 100000]}]}})))
+                                                    :where [:> :salary 100000]}]}})
+    (test-sql 37
+              "SELECT * FROM employees WHERE (department_id, salary) = (SELECT dept_id, max_salary FROM dept_stats WHERE dept_id = 1)"
+              {:select :*
+               :from :employees
+               :where [:= [:pg/list :department_id :salary]
+                       {:ql/type :pg/sub-select
+                        :select :dept_id
+                        :from :dept_stats
+                        :where [:= :dept_id 1]}]})))
 
 (deftest create-table-tests
   (testing "CREATE TABLE queries"
@@ -609,7 +618,6 @@
               {:ql/type :pg/create-table
                :table-name :texts
                :columns {:content ["text" "COLLATE" "en_US.UTF-8"]}})))
-
 
 (deftest create-index-edge-cases
   (testing "CREATE INDEX edge cases"
@@ -1665,3 +1673,46 @@
                  :update :users
                  :set {:verified [:and [:is :email [:pg/sql "NOT NULL"]] [:= :email_confirmed true] [:is :phone [:pg/sql "NOT NULL"]]]}
                  :where [:< :created_at [:pg/param "2023-01-01"]]})))
+
+(deftest unknown-types-tests
+  (testing "Unknown types handling"
+
+    (test-sql 1
+              "CREATE TABLE test_table (id INTEGER CONSTRAINT check_id CHECK (id > 0))"
+              {:ql/type :pg/create-table
+               :table-name :test_table
+               :columns {:id ["pg_catalog.int4" :unknown-constraint-type/CONSTR_CHECK]}})
+
+    (test-sql 2
+              "CREATE TABLE sales_list PARTITION OF sales_main FOR VALUES IN ('US', 'UK', 'FR') PARTITION BY LIST (country)"
+              {:ql/type :pg/create-table
+               :table-name :sales_list
+               :partition-of "sales_main"
+               :partition-by {:method :unknown-strategy-method/PARTITION_STRATEGY_LIST
+                              :expr :country}
+               :for {:type :unknown-strategy-method/PARTITION_STRATEGY_LIST
+                     :part-spec {:strategy "PARTITION_STRATEGY_LIST"
+                                 :partParams [{:PartitionElem {:name "country"
+                                                               :location 100}}]
+                                 :location 81}
+                     :part-bound {:strategy "l"
+                                  :listdatums [{:A_Const {:sval {:sval "US"}
+                                                          :location 63}}
+                                               {:A_Const {:sval {:sval "UK"}, :location 69}}
+                                               {:A_Const {:sval {:sval "FR"}, :location 75}}]
+                                  :location 59}}})
+
+    (test-sql 3
+              "SELECT LEAST(price, discount_price, special_price) FROM products"
+              {:select [:unknown-min-max-op/IS_LEAST :price :discount_price :special_price]
+               :from :products})
+
+    (test-sql 4
+              "SELECT * FROM orders WHERE price > ALL (SELECT price FROM products WHERE category_id = orders.category_id)"
+              {:select :*
+               :from :orders
+               :where [:unknown-sublink-type/ALL_SUBLINK {:testexpr-result :price
+                                                          :subselect-result {:ql/type :pg/sub-select
+                                                                             :select :price
+                                                                             :from :products
+                                                                             :where [:= :category_id :orders.category_id]}}]})))
