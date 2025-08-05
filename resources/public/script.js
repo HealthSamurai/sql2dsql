@@ -25,8 +25,8 @@ function prettyCode(str) {
     formatted = formatted.replace(/\s*}]/g, '}]');
     formatted = formatted.replaceAll("} {", "}\n\n {");
     return formatted;
-
 }
+
 leftEditor.setValue(`SELECT * FROM table1 WHERE element > 30;`);
 
 async function processCode() {
@@ -47,7 +47,6 @@ async function processCode() {
         updateStatus('Error processing code.');
     }
 }
-
 
 function updateStatus(message) {
     const statusEl = document.getElementById('status');
