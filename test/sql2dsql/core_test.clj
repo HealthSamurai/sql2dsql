@@ -1,7 +1,7 @@
 (ns sql2dsql.core-test
   (:require
     [clojure.test :refer :all]
-    [sql2dsql.core :refer [->dsql]]))
+    [sql2dsql.transpiler :refer [->dsql]]))
 
 (defn parse [sql & params]
   (try

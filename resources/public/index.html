@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SQL->DSQL</title>
+
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/theme/monokai.min.css">
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.js"></script>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/addon/edit/closebrackets.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/addon/edit/matchbrackets.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/addon/selection/active-line.min.js"></script>
+    <link rel="stylesheet" href="style.css">
+
+</head>
+<body>
+<div class="header">
+    <h1>SQL to DSQL transpiler</h1>
+    <div class="controls">
+        <button class="submit-btn" onclick="processCode()">Submit →</button>
+    </div>
+</div>
+
+<div class="editor-container">
+    <div class="editor-column">
+        <div class="editor-header">Input Query</div>
+        <div class="editor-wrapper">
+            <label for="leftEditor">
+            </label><textarea id="leftEditor"></textarea>
+        </div>
+    </div>
+
+    <div class="editor-column">
+        <div class="editor-header">Output</div>
+        <div class="editor-wrapper">
+            <label for="rightEditor">
+            </label><textarea id="rightEditor"></textarea>
+        </div>
+    </div>
+</div>
+
+<div class="status-bar">
+    <span id="status">Ready</span>
+</div>
+
+<script src="script.js"></script>
+
+</body>
+</html>
