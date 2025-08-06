@@ -1,6 +1,7 @@
 (ns sql2dsql.transpiler
   (:require
     [clojure.data.json :as json]
+    [clojure.pprint :as p]
     [clojure.string :as string])
   (:import
     [com.example.pgquery PgQuery]))
@@ -9,9 +10,8 @@
 ;; 1. PARSE SQL
 ;; =======================================================================
 
-(defn parse-sql [query]
-  (-> query
-      PgQuery/parse
+(defn parse-sql [lib-path query]
+  (-> (PgQuery/parse query lib-path)
       (json/read-str :key-fn keyword)))
 
 ;; =======================================================================
@@ -822,14 +822,23 @@
 
 (defmethod stmt->dsql :default [_ & [_]] :???)
 
-(defn one->dsql [stmt params]
+
+
+
+(defn one->dsql [stmt pretty-print? params]
   (try
-    (stmt->dsql stmt {:params params})
+    (if pretty-print?
+      (binding [*print-meta* true]
+        (with-out-str (p/pprint (stmt->dsql stmt {:params params}))))
+        (stmt->dsql stmt {:params params}))
     (catch Exception e
       (str "Error processing statement: " stmt " with params: " params) e)))
 
-(defn ->dsql [sql & params]
-  (mapv #(one->dsql (:stmt %) params) (:stmts (parse-sql sql))))
+(defn ->dsql [lib-path sql & params]
+  (mapv #(one->dsql (:stmt %) true params) (:stmts (parse-sql lib-path sql))))
+
+(defn ->dsql-test [sql & params]
+  (mapv #(one->dsql (:stmt %) false params) (:stmts (parse-sql "libpg_query.dylib" sql))))
 
 (comment
   (->dsql "select * from patient where id = '1'"))

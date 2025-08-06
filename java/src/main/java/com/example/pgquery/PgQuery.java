@@ -2,10 +2,9 @@ package com.example.pgquery;
 
 
 public class PgQuery {
-    
-    private static PgQueryLibInterface lib = PgQueryLibInterface.INSTANCE;
 
-    public static String parse(String query) throws Exception {
+    public static String parse(String query, String libraryPath) throws Exception {
+        var lib = PgQueryLibInterface.load(libraryPath);
         var res = lib.pg_query_parse(query);
 
         if (res.error == null) {

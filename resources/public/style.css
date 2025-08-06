@@ -14,18 +14,46 @@ body {
 }
 
 .header {
-    background-color: #2d2d2d;
-    padding: 15px 20px;
-    border-bottom: 1px solid #444;
     display: flex;
     justify-content: space-between;
     align-items: center;
+    padding: 1rem 2rem;
+    background-color: #2d2d2d;
+    color: white;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+}
+.header-left {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
 }
 
-.header h1 {
-    font-size: 24px;
-    font-weight: 500;
-    color: #fff;
+.header-left h1 {
+    margin: 0;
+    font-size: 1.5rem;
+    font-weight: 600;
+}
+
+.github-link {
+    color: white;
+    text-decoration: none;
+    padding: 0.25rem;
+    border-radius: 6px;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.github-link:hover {
+    background: rgba(255, 255, 255, 0.1);
+    transform: translateY(-1px);
+}
+
+.github-link svg {
+    width: 24px;
+    height: 24px;
 }
 
 .controls {

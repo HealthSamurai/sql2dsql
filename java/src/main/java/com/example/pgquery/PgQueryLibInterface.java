@@ -5,7 +5,11 @@ import com.sun.jna.Native;
 
 public interface PgQueryLibInterface extends Library {
 
-    PgQueryLibInterface INSTANCE = Native.load("libpg_query.dylib", PgQueryLibInterface.class);
+//    PgQueryLibInterface INSTANCE = Native.load("libpg_query.dylib", PgQueryLibInterface.class);
+
+    static PgQueryLibInterface load(String libraryPath) {
+        return Native.load(libraryPath, PgQueryLibInterface.class);
+    }
 
     PgQueryParseResult.ByValue pg_query_parse(String input);
 

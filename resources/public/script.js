@@ -17,28 +17,18 @@ const rightEditor = CodeMirror.fromTextArea(document.getElementById('rightEditor
     lineWrapping: true
 });
 
-
-function prettyCode(str) {
-    let formatted = str.replaceAll(', ', '\n');
-    formatted = formatted.replace(/\n\s*/g, '\n  ');
-    formatted = formatted.replace(/\[\{\s*/g, '[{');
-    formatted = formatted.replace(/\s*}]/g, '}]');
-    formatted = formatted.replaceAll("} {", "}\n\n {");
-    return formatted;
-}
-
 leftEditor.setValue(`SELECT * FROM table1 WHERE element > 30;`);
 
 async function processCode() {
     const inputCode = leftEditor.getValue();
     try {
-        const response = await fetch('http://localhost:3000/to_dsql', {
+        const response = await fetch('/to-dsql', {
             method: 'POST',
-            headers: {'Content-Type': 'application/json'},
+            headers: {'Content-Type': 'text/plain'},
             body: JSON.stringify(inputCode)
         });
         const res = await response.text();
-        rightEditor.setValue(prettyCode(res));
+        rightEditor.setValue(res);
         updateStatus('Code submitted successfully!');
     }
     catch (error) {

@@ -1,11 +1,11 @@
 (ns sql2dsql.core-test
   (:require
     [clojure.test :refer :all]
-    [sql2dsql.transpiler :refer [->dsql]]))
+    [sql2dsql.transpiler :refer [->dsql-test]]))
 
 (defn parse [sql & params]
   (try
-    (-> (apply ->dsql (cons sql params))
+    (-> (apply ->dsql-test (cons sql params))
         first)
     (catch Exception e
       (println (str "Error parsing SQL: " sql))
