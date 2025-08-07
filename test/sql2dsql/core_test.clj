@@ -1,7 +1,12 @@
 (ns sql2dsql.core-test
   (:require
     [clojure.test :refer :all]
-    [sql2dsql.transpiler :refer [->dsql-test]]))
+    [sql2dsql.transpiler :refer [this-stmt->dsql make-parser]]))
+
+(def parser (make-parser "libpg_query.dylib"))
+
+(defn ->dsql-test [sql & params]
+  (mapv #(this-stmt->dsql (:stmt %) false params) (:stmts (parser sql))))
 
 (defn parse [sql & params]
   (try

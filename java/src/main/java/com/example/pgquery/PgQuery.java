@@ -1,4 +1,5 @@
 package com.example.pgquery;
+import com.sun.jna.Native;
 
 
 public class PgQuery {
@@ -14,4 +15,7 @@ public class PgQuery {
         }
     }
 
+    public static PgQueryLibInterface load(String libraryPath) {
+        return Native.load(libraryPath, PgQueryLibInterface.class);
+    }
 }

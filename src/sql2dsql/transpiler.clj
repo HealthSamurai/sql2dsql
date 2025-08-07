@@ -3,26 +3,10 @@
     [clojure.data.json :as json]
     [clojure.pprint :as p]
     [clojure.string :as string])
-  (:import
-    [com.example.pgquery PgQuery]))
+  (:import (com.example.pgquery PgQuery)))
 
 ;; =======================================================================
-;; 1. PARSE SQL
-;; =======================================================================
-
-(defn parse-sql [lib-path query]
-  (-> (PgQuery/parse query lib-path)
-      (json/read-str :key-fn keyword)))
-
-;; =======================================================================
-;; 2. MULTIMETHOD
-;; =======================================================================
-
-(defmulti stmt->dsql (fn [x & [_]]
-                       (if (map? x) (ffirst x) :unknown)))
-
-;; =======================================================================
-;; 3. HELPERS
+;; 1. HELPERS
 ;; =======================================================================
 
 (defn star? [column-ref]
@@ -59,8 +43,11 @@
            (= (first x) :join))))
 
 ;; =======================================================================
-;; 4. MAIN METHODS
+;; 2. MAIN METHODS
 ;; =======================================================================
+
+(defmulti stmt->dsql (fn [x & [_]]
+                       (if (map? x) (ffirst x) :unknown)))
 
 ;; ============================
 ;; EXPLAIN STATEMENTS
@@ -822,23 +809,31 @@
 
 (defmethod stmt->dsql :default [_ & [_]] :???)
 
+;; =======================================================================
+;; 3. SQLToDSQL
+;; =======================================================================
 
+(defn make-parser [native-lib-path]
+  (let [pg-query (PgQuery/load native-lib-path)]
+    (fn [sql]
+      (let [result (.pg_query_parse pg-query sql)]
+        (if-let [error (.-error result)]
+          (throw (ex-info (.-message error) {:sql sql}))
+          (json/read-str (.-parse_tree result) :key-fn keyword))))))
 
+(def parse-sql (atom nil))
 
-(defn one->dsql [stmt pretty-print? params]
+(defn this-stmt->dsql [stmt pretty-print? params]
   (try
     (if pretty-print?
       (binding [*print-meta* true]
         (with-out-str (p/pprint (stmt->dsql stmt {:params params}))))
-        (stmt->dsql stmt {:params params}))
+      (stmt->dsql stmt {:params params}))
     (catch Exception e
       (str "Error processing statement: " stmt " with params: " params) e)))
 
-(defn ->dsql [lib-path sql & params]
-  (mapv #(one->dsql (:stmt %) true params) (:stmts (parse-sql lib-path sql))))
-
-(defn ->dsql-test [sql & params]
-  (mapv #(one->dsql (:stmt %) false params) (:stmts (parse-sql "libpg_query.dylib" sql))))
+(defn ->dsql [sql & params]
+  (mapv #(this-stmt->dsql (:stmt %) true params) (:stmts (@parse-sql sql))))
 
 (comment
   (->dsql "select * from patient where id = '1'"))

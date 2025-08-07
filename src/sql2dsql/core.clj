@@ -3,11 +3,9 @@
             [org.httpkit.server :as httpkit]
             [compojure.core :refer :all]
             [compojure.route :as route]
-            [ring.middleware.defaults :refer [wrap-defaults site-defaults]]
-            [sql2dsql.transpiler :refer [->dsql]])
+            [sql2dsql.transpiler :refer [->dsql make-parser parse-sql]]
+            [ring.middleware.defaults :refer [wrap-defaults site-defaults]])
   (:gen-class))
-
-(def ^String lib-path_ nil)
 
 (defroutes app-routes
            (GET "/" []
@@ -17,7 +15,7 @@
 
            (POST "/to-dsql" request
              (try
-                 {:status 200 :body (->dsql lib-path_ (-> request :body slurp (json/parse-string true)))}
+                 {:status 200 :body (->dsql (-> request :body slurp (json/parse-string true)))}
                (catch Exception e
                  {:status 400 :body (str "Error: " (.getMessage e))})))
 
@@ -27,17 +25,13 @@
                                 {:status 404
                                  :body (str "Error: Route not found - " (:uri request))})))
 
-
 (def app
   (wrap-defaults app-routes
                  (assoc-in site-defaults [:security :anti-forgery] false)))
 
 (defn -main [& args]
-  (do
-    (println "Starting server on port 3000...")
-    (if (empty? args)
-      (httpkit/run-server app {:port 3000 :join? false})
-      (let [lib-path (first args)]
-        (println "Using library path:" lib-path)
-        (alter-var-root #'lib-path_ (constantly lib-path))
-        (httpkit/run-server app {:port 3000 :join? false})))))
+  (println "Starting server on port 3000...")
+  (let [lib-path (or (first args) "libpg_query.dylib")]
+    (println "Using library path:" lib-path)
+    (reset! parse-sql (make-parser lib-path))
+    (httpkit/run-server app {:port 3000 :join? false})))
