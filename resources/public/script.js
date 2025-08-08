@@ -21,11 +21,15 @@ leftEditor.setValue(`SELECT * FROM table1 WHERE element > 30;`);
 
 async function processCode() {
     const inputCode = leftEditor.getValue();
+    const params = document.getElementById("params");
     try {
         const response = await fetch('/to-dsql', {
             method: 'POST',
-            headers: {'Content-Type': 'text/plain'},
-            body: JSON.stringify(inputCode)
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                sql: inputCode,
+                params: params.value.split(" ")
+            })
         });
         const res = await response.text();
         rightEditor.setValue(res);

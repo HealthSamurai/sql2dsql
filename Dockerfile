@@ -26,4 +26,4 @@ RUN mvn -f java/pom.xml clean package
 # Pre-fetch Clojure dependencies
 RUN clojure -P
 
-CMD ["clojure", "-M:run", "/usr/local/lib/libpg_query.so"]
+CMD ["clojure", "-M:run"]

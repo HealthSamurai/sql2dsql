@@ -1,4 +1,4 @@
-package com.example.pgquery;
+package sql2dsql.pgquery;
 
 import com.sun.jna.Structure;
 

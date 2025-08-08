@@ -1,55 +1,74 @@
 (ns sql2dsql.core
-  (:require [cheshire.core :as json]
-            [org.httpkit.server :as httpkit]
-            [compojure.core :refer :all]
-            [compojure.route :as route]
-            [sql2dsql.sql-parser :refer [make-sql-parser sql->dsql]]
-            [ring.middleware.defaults :refer [wrap-defaults site-defaults]])
+  (:require
+   [cheshire.core :as json]
+   [clojure.pprint :as p]
+   [clojure.string :as s]
+   [compojure.core :refer [defroutes GET POST]]
+   [compojure.route :as route]
+   [org.httpkit.server :as httpkit]
+   [ring.middleware.defaults :refer [site-defaults wrap-defaults]]
+   [sql2dsql.transpiler :as transpiler])
+  (:import
+   (sql2dsql.pgquery PgQueryLibInterface))
   (:gen-class))
 
-(defn make-routes [parser]
-  "Create routes with parser dependency injected"
-  (routes
-    (GET "/" []
-      {:status 200
-       :headers {"Content-Type" "text/html"}
-       :body (slurp "resources/public/index.html")})
+(def port (or (some-> (System/getenv "PORT") parse-long) 3000))
+(def lib-path (or (System/getenv "PGQUERY_PATH") "libpg_query.dylib"))
+(def ->dsql (transpiler/make (PgQueryLibInterface/load lib-path)))
 
-    (POST "/to-dsql" request
-      (try
-        (let [sql (-> request :body slurp (json/parse-string true))
-              result (sql->dsql parser sql [] true)]
-          {:status 200
-           :headers {"Content-Type" "application/json"}
-           :body result})
-        (catch Exception e
-          {:status 400
-           :headers {"Content-Type" "application/json"}
-           :body (.getMessage e)})))
+(defn parse [stmt params]
+  (try
+    (binding [*print-meta* true]
+      (s/join "" (map #(with-out-str (p/pprint %)) (->dsql stmt params))))
+    (catch Exception e
+      (str "Error processing statement: " stmt " with params: " params " Error: " (.getMessage e)))))
 
-    (route/resources "/")
+(defroutes app
+  (GET "/" []
+    {:status 200
+     :headers {"Content-Type" "text/html"}
+     :body (slurp "resources/public/index.html")})
 
-    (route/not-found (fn [request]
-                       {:status 404
-                        :headers {"Content-Type" "application/json"}
-                        :body (json/generate-string
-                                {:error (str "Route not found - " (:uri request))})}))))
-
-(defn make-app [parser]
-  "Create the app with parser dependency"
-  (wrap-defaults (make-routes parser)
-                 (assoc-in site-defaults [:security :anti-forgery] false)))
-
-(defn -main [& args]
-  (println "Starting server on port 3000...")
-  (let [lib-path (or (first args) "libpg_query.dylib")]
-    (println "Using library path:" lib-path)
+  (POST "/to-dsql" request
     (try
-      (let [parser (make-sql-parser lib-path)
-            app (make-app parser)]
-        (println "Parser initialized successfully")
-        (httpkit/run-server app {:port 3000 :join? false})
-        (println "Server started on port 3000"))
+      (let [body (-> request :body slurp (json/parse-string true))]
+        (if-let [sql (:sql body)]
+          {:status 200
+           :headers {"Content-Type" "text/plain"}
+           :body (parse sql (:params body))}
+          {:status 200
+           :headers {"Content-Type" "text/plain"}
+           :body ""}))
       (catch Exception e
-        (println "Failed to initialize parser:" (.getMessage e))
-        (System/exit 1)))))
+        {:status 409
+         :headers {"Content-Type" "text/plain"}
+         :body (.getMessage e)})))
+
+  (route/resources "/")
+
+  (route/not-found (fn [request]
+                     {:status 404
+                      :headers {"Content-Type" "application/json"}
+                      :body (json/generate-string
+                             {:error (str "Route not found - " (:uri request))})})))
+
+(defn start-server []
+  (println (str "Server will start on port " port))
+  (println "Using library path:" lib-path)
+  (try
+    (httpkit/run-server
+     (wrap-defaults app
+                    (assoc-in site-defaults [:security :anti-forgery] false))
+     {:port port :join? false})
+    (catch Exception e
+      (println "Failed to initialize parser:" (.getMessage e))
+      )))
+
+(defn -main [& _] (start-server))
+
+(comment
+
+  (def stop (start-server))
+  (stop)
+
+)

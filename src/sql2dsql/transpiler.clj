@@ -1,6 +1,9 @@
 (ns sql2dsql.transpiler
   (:require
-    [clojure.string :as string]))
+   [clojure.data.json :as json]
+   [clojure.string :as string])
+  (:import
+   (sql2dsql.pgquery PgQueryLibInterface)))
 
 ;; =======================================================================
 ;; 1. HELPERS
@@ -806,5 +809,15 @@
 
 (defmethod stmt->dsql :default [_ & [_]] :???)
 
-(comment
-  (->dsql "select * from patient where id = '1'"))
+
+(defn make-parser [native-lib]
+  (fn [sql]
+    (let [result (.pg_query_parse native-lib sql)]
+      (if-let [error (.-error result)]
+        (throw (ex-info (.-message error) {:sql sql}))
+        (json/read-str (.-parse_tree result) :key-fn keyword)))))
+
+(defn make [native-lib]
+  (let [parse-sql (make-parser native-lib)]
+    (fn [sql & [params]]
+      (mapv (fn [{stmt :stmt}] (stmt->dsql stmt {:params params})) (:stmts (parse-sql sql))))))

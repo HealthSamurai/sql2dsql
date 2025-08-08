@@ -84,9 +84,37 @@ body {
 }
 
 .editor-container {
-    flex: 1;
+    flex: none;
+    height: 50vh;
+    min-height: 350px;
     display: flex;
     overflow: hidden;
+}
+.documentation {
+    height: 50vh;
+    min-height: 180px;
+    background: #232323;
+    color: #e0e0e0;
+    padding: 24px 32px 16px 32px;
+    font-size: 1rem;
+    border-top: 1px solid #444;
+    overflow-y: auto;
+}
+.documentation h2, .documentation h3 {
+    color: #8be9fd;
+    margin-top: 0;
+    margin-bottom: 4px !important;
+}
+.documentation code, .documentation pre {
+    background: #181818;
+    color: #f1fa8c;
+    border-radius: 4px;
+    padding: 4px 0px;
+    font-size: 0.95em;
+}
+.documentation ul {
+    margin: 0 0 0 1.2em;
+    padding: 0;
 }
 
 .editor-column {
@@ -129,6 +157,33 @@ body {
     border-top: 1px solid #444;
     display: flex;
     justify-content: space-between;
+}
+
+.params {
+    font-size: 14px;
+    line-height: 1.5;
+    padding: 5px;
+}
+
+.documentation h2 {
+    margin-bottom: 1.2em;
+}
+.documentation h3 {
+    margin-top: 1.5em;
+    margin-bottom: 0.7em;
+}
+.documentation p {
+    margin-bottom: 1em;
+}
+.documentation ul {
+    margin-bottom: 1em;
+}
+.documentation pre {
+    margin-bottom: 1em;
+}
+.documentation button {
+    margin-top: 1em;
+    margin-bottom: 1em;
 }
 
 @media (max-width: 768px) {
