@@ -3,35 +3,53 @@
             [org.httpkit.server :as httpkit]
             [compojure.core :refer :all]
             [compojure.route :as route]
-            [sql2dsql.transpiler :refer [->dsql make-parser parse-sql]]
+            [sql2dsql.sql-parser :refer [make-sql-parser sql->dsql]]
             [ring.middleware.defaults :refer [wrap-defaults site-defaults]])
   (:gen-class))
 
-(defroutes app-routes
-           (GET "/" []
-             {:status 200
-              :headers {"Content-Type" "text/html"}
-              :body (slurp "resources/public/index.html")})
+(defn make-routes [parser]
+  "Create routes with parser dependency injected"
+  (routes
+    (GET "/" []
+      {:status 200
+       :headers {"Content-Type" "text/html"}
+       :body (slurp "resources/public/index.html")})
 
-           (POST "/to-dsql" request
-             (try
-                 {:status 200 :body (->dsql (-> request :body slurp (json/parse-string true)))}
-               (catch Exception e
-                 {:status 400 :body (str "Error: " (.getMessage e))})))
+    (POST "/to-dsql" request
+      (try
+        (let [sql (-> request :body slurp (json/parse-string true))
+              result (sql->dsql parser sql [] true)]
+          {:status 200
+           :headers {"Content-Type" "application/json"}
+           :body result})
+        (catch Exception e
+          {:status 400
+           :headers {"Content-Type" "application/json"}
+           :body (.getMessage e)})))
 
-           (route/resources "/")
+    (route/resources "/")
 
-           (route/not-found (fn [request]
-                                {:status 404
-                                 :body (str "Error: Route not found - " (:uri request))})))
+    (route/not-found (fn [request]
+                       {:status 404
+                        :headers {"Content-Type" "application/json"}
+                        :body (json/generate-string
+                                {:error (str "Route not found - " (:uri request))})}))))
 
-(def app
-  (wrap-defaults app-routes
+(defn make-app [parser]
+  "Create the app with parser dependency"
+  (wrap-defaults (make-routes parser)
                  (assoc-in site-defaults [:security :anti-forgery] false)))
 
 (defn -main [& args]
   (println "Starting server on port 3000...")
   (let [lib-path (or (first args) "libpg_query.dylib")]
     (println "Using library path:" lib-path)
-    (reset! parse-sql (make-parser lib-path))
-    (httpkit/run-server app {:port 3000 :join? false})))
+    (try
+      (let [parser (make-sql-parser lib-path)
+            app (make-app parser)]
+        (println "Parser initialized successfully")
+        (httpkit/run-server app {:port 3000 :join? false})
+        (println "Server started on port 3000"))
+      (catch Exception e
+        (println "Failed to initialize parser:" (.getMessage e))
+        (System/exit 1)))))

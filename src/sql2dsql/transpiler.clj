@@ -1,9 +1,6 @@
 (ns sql2dsql.transpiler
   (:require
-    [clojure.data.json :as json]
-    [clojure.pprint :as p]
-    [clojure.string :as string])
-  (:import (com.example.pgquery PgQuery)))
+    [clojure.string :as string]))
 
 ;; =======================================================================
 ;; 1. HELPERS
@@ -808,32 +805,6 @@
 ;; ============================
 
 (defmethod stmt->dsql :default [_ & [_]] :???)
-
-;; =======================================================================
-;; 3. SQLToDSQL
-;; =======================================================================
-
-(defn make-parser [native-lib-path]
-  (let [pg-query (PgQuery/load native-lib-path)]
-    (fn [sql]
-      (let [result (.pg_query_parse pg-query sql)]
-        (if-let [error (.-error result)]
-          (throw (ex-info (.-message error) {:sql sql}))
-          (json/read-str (.-parse_tree result) :key-fn keyword))))))
-
-(def parse-sql (atom nil))
-
-(defn this-stmt->dsql [stmt pretty-print? params]
-  (try
-    (if pretty-print?
-      (binding [*print-meta* true]
-        (with-out-str (p/pprint (stmt->dsql stmt {:params params}))))
-      (stmt->dsql stmt {:params params}))
-    (catch Exception e
-      (str "Error processing statement: " stmt " with params: " params) e)))
-
-(defn ->dsql [sql & params]
-  (mapv #(this-stmt->dsql (:stmt %) true params) (:stmts (@parse-sql sql))))
 
 (comment
   (->dsql "select * from patient where id = '1'"))

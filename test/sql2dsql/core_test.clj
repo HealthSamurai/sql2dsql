@@ -1,16 +1,13 @@
 (ns sql2dsql.core-test
   (:require
     [clojure.test :refer :all]
-    [sql2dsql.transpiler :refer [this-stmt->dsql make-parser]]))
+    [sql2dsql.sql-parser :refer [sql->dsql make-sql-parser]]))
 
-(def parser (make-parser "libpg_query.dylib"))
-
-(defn ->dsql-test [sql & params]
-  (mapv #(this-stmt->dsql (:stmt %) false params) (:stmts (parser sql))))
+(def parser (make-sql-parser "libpg_query.dylib"))
 
 (defn parse [sql & params]
   (try
-    (-> (apply ->dsql-test (cons sql params))
+    (-> (sql->dsql parser sql (vec params) false)
         first)
     (catch Exception e
       (println (str "Error parsing SQL: " sql))
