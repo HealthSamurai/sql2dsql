@@ -26,10 +26,17 @@ You can play with core functions in `user` namespace:
 
 ```clojure
 (ns user
-  (:require [sql2dsql.core :refer [->dsql parse-sql]]))
+  (:require [sql2dsql.transpiler :as transpiler])
+  (:import
+   (sql2dsql.pgquery PgQueryLibInterface)))
 
-(parse-sql "select * from patient where id = '1'")
-(->dsql "select * from patient where id = '1'")
+(def native-lib (PgQueryLibInterface/load "libpg_query.dylib"))
+(def parse-sql (transpiler/make-parser native-lib))
+(def ->dsql (transpiler/make native-lib))
+
+
+(parse-sql "select * from user where id = '1'")
+(->dsql "select * from user where id = '1'")
 ```
 
 To run tests:
@@ -43,6 +50,12 @@ clojure -X:test
 - Clojure 1.11 or later
 - libpg_query native library must be available in your system's library path
 
+## Docker
+
+```
+docker build -t sql2dsql .
+docker run -ti -p 3000:3000 --env-file ./.env.example sql2dsql
+```
 
 ## AST Progress
 
@@ -315,8 +328,3 @@ clojure -X:test
 | :IntList | 🔴 |
 | :OidList | 🔴 |
 | :A_Const | 🟢 |
-
-
-## License
-
-Distributed under the Eclipse Public License version 1.0.

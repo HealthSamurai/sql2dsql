@@ -1,9 +1,10 @@
-package com.example.pgquery;
+package sql2dsql.pgquery;
 
-import com.example.pgquery.PgQueryError;
 import com.sun.jna.Pointer;
 import com.sun.jna.Structure;
 import com.sun.jna.ptr.PointerByReference;
+
+import sql2dsql.pgquery.PgQueryError;
 
 import java.util.Arrays;
 import java.util.List;
@@ -21,7 +22,6 @@ public class PgQueryParseResult extends Structure {
 
     protected PgQueryParseResult(Pointer p) {
         super(p);
-        //read();
     }
 
     public String parse_tree;

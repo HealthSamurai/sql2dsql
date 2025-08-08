@@ -1,11 +1,16 @@
 (ns sql2dsql.core-test
   (:require
-    [clojure.test :refer :all]
-    [sql2dsql.core :refer [->dsql]]))
+   [clojure.test :refer :all]
+   [sql2dsql.transpiler :as transpiler]) 
+  (:import
+   (sql2dsql.pgquery PgQueryLibInterface)))
+
+(def native-lib (PgQueryLibInterface/load "libpg_query.dylib"))
+(def ->dsql (transpiler/make native-lib))
 
 (defn parse [sql & params]
   (try
-    (-> (apply ->dsql (cons sql params))
+    (-> (->dsql sql (vec params))
         first)
     (catch Exception e
       (println (str "Error parsing SQL: " sql))
